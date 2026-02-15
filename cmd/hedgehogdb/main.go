@@ -108,8 +108,8 @@ func main() {
 		time.Duration(cfg.AntiEntropyIntervalSec)*time.Second,
 	)
 
-	// Create API server
-	server := api.NewServer(cfg.BindAddr, tableManager)
+	// Create API server (coordinator enables replication for PUT/GET/DELETE)
+	server := api.NewServer(cfg.BindAddr, tableManager, coordinator)
 
 	// Register cluster routes
 	coordinator.RegisterInternalRoutes(server.Router())

@@ -247,7 +247,7 @@ Type: `statusWriter` — wraps ResponseWriter to capture status code
 Type: `Server` — holds httpServer, router, handlers, tableManager
 
 Functions:
-- `NewServer(bindAddr, tableManager)` — create server, apply middleware, register all routes
+- `NewServer(bindAddr, tableManager, coordinator)` — create server, apply middleware, register all routes. Coordinator may be nil for standalone.
 - `Router()` — return router for additional route registration
 - `Start()` — ListenAndServe
 - `Shutdown(ctx)` — graceful shutdown + close table manager

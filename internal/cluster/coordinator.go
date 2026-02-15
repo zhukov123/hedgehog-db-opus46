@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hedgehog-db/hedgehog/internal/storage"
 	"github.com/hedgehog-db/hedgehog/internal/table"
 )
 
@@ -294,6 +295,10 @@ func (c *Coordinator) forwardGet(nodeID, tableName, key string) (map[string]inte
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return nil, storage.ErrKeyNotFound
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("forward get to %s: status %d: %s", nodeID, resp.StatusCode, body)

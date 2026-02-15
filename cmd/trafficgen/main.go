@@ -20,13 +20,14 @@ import (
 )
 
 var (
-	baseURL   string
-	urls      string // comma-separated; if set we round-robin across these instead of single baseURL
-	urlList   []string
-	urlIndex  atomic.Uint64
-	insertsPS float64
-	updatesPS float64
-	deletesPS float64
+	baseURL     string
+	urls        string // comma-separated; if set we round-robin across these instead of single baseURL
+	urlList     []string
+	urlIndex    atomic.Uint64
+	insertsPS   float64
+	updatesPS   float64
+	deletesPS   float64
+	insertsOnly bool
 )
 
 var (
@@ -60,6 +61,7 @@ Environment:
 
 Example:
   ./bin/trafficgen
+  ./bin/trafficgen -inserts-only
   ./bin/trafficgen -inserts 10 -updates 3 -deletes 1
   ./bin/trafficgen -urls http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083
 `)
@@ -69,7 +71,14 @@ Example:
 	flag.Float64Var(&insertsPS, "inserts", 5, "inserts per second (across all tables; keep > updates+deletes so data grows)")
 	flag.Float64Var(&updatesPS, "updates", 2, "updates per second (across all tables)")
 	flag.Float64Var(&deletesPS, "deletes", 1, "deletes per second (across all tables)")
+	flag.BoolVar(&insertsOnly, "inserts-only", false, "inserts only mode (no updates or deletes)")
 	flag.Parse()
+
+	if insertsOnly {
+		updatesPS = 0
+		deletesPS = 0
+		log.Printf("inserts-only mode: updates=0, deletes=0")
+	}
 
 	// Parse -urls for round-robin; otherwise single baseURL
 	if urls != "" {

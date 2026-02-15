@@ -10,14 +10,23 @@ import (
 	"github.com/hedgehog-db/hedgehog/internal/table"
 )
 
+// ItemCoordinator routes item operations through the cluster (replication, forwarding).
+// When nil, handlers use the table manager directly (standalone mode).
+type ItemCoordinator interface {
+	RoutePut(tableName, key string, doc map[string]interface{}, consistency string) error
+	RouteGet(tableName, key, consistency string) (map[string]interface{}, error)
+	RouteDelete(tableName, key, consistency string) error
+}
+
 // Handlers holds the API handler dependencies.
 type Handlers struct {
 	tableManager *table.TableManager
+	coordinator  ItemCoordinator
 }
 
-// NewHandlers creates API handlers.
-func NewHandlers(tm *table.TableManager) *Handlers {
-	return &Handlers{tableManager: tm}
+// NewHandlers creates API handlers. Coordinator may be nil for standalone mode.
+func NewHandlers(tm *table.TableManager, coordinator ItemCoordinator) *Handlers {
+	return &Handlers{tableManager: tm, coordinator: coordinator}
 }
 
 // --- Table Operations ---
@@ -76,10 +85,35 @@ func (h *Handlers) DeleteTable(w http.ResponseWriter, r *http.Request) {
 
 // --- Item Operations ---
 
+func parseConsistency(r *http.Request) string {
+	c := r.URL.Query().Get("consistency")
+	if c == "strong" {
+		return "strong"
+	}
+	return "eventual"
+}
+
 // GetItem handles GET /api/v1/tables/{name}/items/{key}
 func (h *Handlers) GetItem(w http.ResponseWriter, r *http.Request) {
 	tableName := Param(r, "name")
 	key := Param(r, "key")
+
+	if h.coordinator != nil {
+		doc, err := h.coordinator.RouteGet(tableName, key, parseConsistency(r))
+		if err != nil {
+			if err == storage.ErrKeyNotFound {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("item %q not found", key))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"key":  key,
+			"item": doc,
+		})
+		return
+	}
 
 	t, err := h.tableManager.GetTable(tableName)
 	if err != nil {
@@ -120,6 +154,18 @@ func (h *Handlers) PutItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.coordinator != nil {
+		if err := h.coordinator.RoutePut(tableName, key, doc, parseConsistency(r)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"key":     key,
+			"message": "item saved",
+		})
+		return
+	}
+
 	t, err := h.tableManager.GetTable(tableName)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -141,6 +187,21 @@ func (h *Handlers) PutItem(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) DeleteItem(w http.ResponseWriter, r *http.Request) {
 	tableName := Param(r, "name")
 	key := Param(r, "key")
+
+	if h.coordinator != nil {
+		if err := h.coordinator.RouteDelete(tableName, key, parseConsistency(r)); err != nil {
+			if err == storage.ErrKeyNotFound {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("item %q not found", key))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"message": fmt.Sprintf("item %q deleted", key),
+		})
+		return
+	}
 
 	t, err := h.tableManager.GetTable(tableName)
 	if err != nil {

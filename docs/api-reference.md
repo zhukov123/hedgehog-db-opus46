@@ -95,6 +95,9 @@ Delete a table and all its data.
 
 Create or update an item. The request body is the JSON document to store.
 
+**Query Parameters**
+- `consistency` — `strong` or `eventual` (cluster mode only; default: eventual). Use `strong` to wait for write quorum; `eventual` writes locally and replicates async.
+
 **Request Body** — any valid JSON object
 ```json
 {
@@ -117,7 +120,7 @@ Create or update an item. The request body is the JSON document to store.
 - `404` — table not found
 - `500` — storage error (e.g., key too large)
 
-**What happens internally**: JSON marshal the document → `BPlusTree.Insert(key_bytes, json_bytes)` → find leaf → if key exists, delete old cell and re-insert → if leaf is full, split and promote.
+**What happens internally**: In cluster mode, coordinator routes the write (replication to N nodes; `strong` waits for W acks). Locally: JSON marshal → `BPlusTree.Insert` → find leaf → insert or update; split if full.
 
 **Key constraints**: Max key size is 512 bytes. Max inline value size is ~2KB (limited by what fits in a leaf page cell alongside the key and cell pointer overhead). In practice, JSON documents up to ~1.5KB work reliably.
 
@@ -150,6 +153,9 @@ Get a single item by key.
 ### DELETE /api/v1/tables/{name}/items/{key}
 
 Delete an item.
+
+**Query Parameters**
+- `consistency` — `strong` or `eventual` (cluster mode only; default: eventual).
 
 **Response** `200 OK`
 ```json

@@ -18,8 +18,8 @@ type Server struct {
 	tableManager *table.TableManager
 }
 
-// NewServer creates a new API server.
-func NewServer(bindAddr string, tm *table.TableManager) *Server {
+// NewServer creates a new API server. Coordinator may be nil for standalone mode (no replication).
+func NewServer(bindAddr string, tm *table.TableManager, coordinator ItemCoordinator) *Server {
 	router := NewRouter()
 
 	// Apply middleware
@@ -27,7 +27,7 @@ func NewServer(bindAddr string, tm *table.TableManager) *Server {
 	router.Use(LoggingMiddleware)
 	router.Use(CORSMiddleware)
 
-	handlers := NewHandlers(tm)
+	handlers := NewHandlers(tm, coordinator)
 
 	// Register routes
 	router.POST("/api/v1/tables", handlers.CreateTable)

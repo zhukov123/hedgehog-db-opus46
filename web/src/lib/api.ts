@@ -66,7 +66,8 @@ export const api = {
   // Tables
   async listTables(): Promise<TableMeta[]> {
     const data = await request('GET', '/api/v1/tables');
-    return data.tables || [];
+    const tables = data.tables || [];
+    return tables.sort((a, b) => a.name.localeCompare(b.name));
   },
 
   async createTable(name: string): Promise<void> {

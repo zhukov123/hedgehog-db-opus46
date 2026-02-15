@@ -128,7 +128,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, func()) {
     dir, _ := os.MkdirTemp("", "hedgehog-integration-*")
     catalog, _ := table.OpenCatalog(dir)
     tm := table.NewTableManager(catalog, table.TableOptions{DataDir: dir, BufferPoolSize: 256})
-    server := api.NewServer(":0", tm)
+    server := api.NewServer(":0", tm, nil)
     ts := httptest.NewServer(server.Router())
     cleanup := func() { ts.Close(); tm.Close(); os.RemoveAll(dir) }
     return ts, cleanup

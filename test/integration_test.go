@@ -34,7 +34,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, func()) {
 	}
 	tm := table.NewTableManager(catalog, opts)
 
-	server := api.NewServer(":0", tm)
+	server := api.NewServer(":0", tm, nil)
 	ts := httptest.NewServer(server.Router())
 
 	cleanup := func() {
