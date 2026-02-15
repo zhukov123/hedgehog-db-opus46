@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -11,6 +12,15 @@ import (
 
 	"github.com/hedgehog-db/hedgehog/internal/metrics"
 )
+
+// drainBody fully reads and closes a response body so the TCP connection
+// can be returned to the pool for reuse.
+func drainBody(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
 
 // HintedHandoff stores writes for unavailable nodes.
 type HintedHandoff struct {
@@ -109,6 +119,11 @@ func NewReplicator(membership *Membership) *Replicator {
 		handoff:    NewHintedHandoff(),
 		client: &http.Client{
 			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        200,
+				MaxIdleConnsPerHost: 50,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
@@ -157,7 +172,7 @@ func (r *Replicator) ReplicateWrite(tableName, key string, doc map[string]interf
 			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 			continue
 		}
-		resp.Body.Close()
+		drainBody(resp)
 		metrics.ReplicationSendTotal.WithLabelValues("put", nodeID, "success").Inc()
 	}
 }
@@ -202,7 +217,7 @@ func (r *Replicator) ReplicateDelete(tableName, key string, nodes []string) {
 			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 			continue
 		}
-		resp.Body.Close()
+		drainBody(resp)
 		metrics.ReplicationSendTotal.WithLabelValues("delete", nodeID, "success").Inc()
 	}
 }
@@ -234,7 +249,7 @@ func (r *Replicator) ReplayHints(nodeID string) {
 				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 				return
 			}
-			resp.Body.Close()
+			drainBody(resp)
 			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "put").Inc()
 
 		case "delete":
@@ -248,7 +263,7 @@ func (r *Replicator) ReplayHints(nodeID string) {
 				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 				return
 			}
-			resp.Body.Close()
+			drainBody(resp)
 			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "delete").Inc()
 		}
 	}

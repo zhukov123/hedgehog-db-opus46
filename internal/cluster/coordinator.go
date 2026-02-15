@@ -21,6 +21,15 @@ import (
 
 var coordTracer = otel.Tracer("hedgehogdb.coordinator")
 
+// drainClose fully reads and closes a response body so the TCP connection
+// can be returned to the pool for reuse.
+func drainClose(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
 // Coordinator routes requests to the appropriate nodes.
 type Coordinator struct {
 	membership   *Membership
@@ -44,6 +53,11 @@ func NewCoordinator(membership *Membership, ring *Ring, tm *table.TableManager, 
 		replN:        replN,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        200,
+				MaxIdleConnsPerHost: 50,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
@@ -369,7 +383,7 @@ func (c *Coordinator) forwardPut(ctx context.Context, nodeID, tableName, key str
 	if err != nil {
 		return fmt.Errorf("forward put to %s: %w", nodeID, err)
 	}
-	resp.Body.Close()
+	drainClose(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("forward put to %s: status %d", nodeID, resp.StatusCode)
@@ -390,7 +404,7 @@ func (c *Coordinator) forwardDelete(ctx context.Context, nodeID, tableName, key 
 	if err != nil {
 		return fmt.Errorf("forward delete to %s: %w", nodeID, err)
 	}
-	resp.Body.Close()
+	drainClose(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("forward delete to %s: status %d", nodeID, resp.StatusCode)

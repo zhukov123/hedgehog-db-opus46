@@ -31,7 +31,14 @@ var (
 )
 
 var (
-	client    = &http.Client{Timeout: 10 * time.Second}
+	client = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        300,
+			MaxIdleConnsPerHost: 100,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 	insertCnt atomic.Int64
 	updateCnt atomic.Int64
 	deleteCnt atomic.Int64
@@ -569,12 +576,19 @@ func createTablesOn(base string, tables []string) error {
 		if err != nil {
 			return fmt.Errorf("create table %q on %s: %w", name, base, err)
 		}
-		resp.Body.Close()
+		drainClose(resp)
 		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
 			return fmt.Errorf("create table %q on %s: server returned %d", name, base, resp.StatusCode)
 		}
 	}
 	return nil
+}
+
+// drainClose fully reads and closes a response body so the underlying
+// TCP connection can be returned to the pool for reuse.
+func drainClose(resp *http.Response) {
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 }
 
 func doPut(table, key string, body []byte) (bool, error) {
@@ -588,7 +602,7 @@ func doPut(table, key string, body []byte) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	if resp.StatusCode == http.StatusOK {
 		return true, nil
 	}
@@ -606,7 +620,7 @@ func doDelete(table, key string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp)
 	if resp.StatusCode == http.StatusOK {
 		return true, nil
 	}
