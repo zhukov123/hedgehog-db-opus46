@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,9 +10,16 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hedgehog-db/hedgehog/internal/metrics"
 	"github.com/hedgehog-db/hedgehog/internal/storage"
 	"github.com/hedgehog-db/hedgehog/internal/table"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var coordTracer = otel.Tracer("hedgehogdb.coordinator")
 
 // Coordinator routes requests to the appropriate nodes.
 type Coordinator struct {
@@ -46,7 +54,16 @@ func (c *Coordinator) SetReplicator(r *Replicator) {
 }
 
 // RouteGet routes a GET request for a key.
-func (c *Coordinator) RouteGet(tableName, key, consistency string) (map[string]interface{}, error) {
+func (c *Coordinator) RouteGet(ctx context.Context, tableName, key, consistency string) (map[string]interface{}, error) {
+	ctx, span := coordTracer.Start(ctx, "coordinator.route_get",
+		trace.WithAttributes(
+			attribute.String("table", tableName),
+			attribute.String("key", key),
+			attribute.String("consistency", consistency),
+		),
+	)
+	defer span.End()
+
 	nodes := c.ring.GetNodes(key, c.replN)
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no nodes available")
@@ -55,7 +72,7 @@ func (c *Coordinator) RouteGet(tableName, key, consistency string) (map[string]i
 	selfID := c.membership.SelfID()
 
 	if consistency == "strong" {
-		return c.quorumRead(tableName, key, nodes)
+		return c.quorumRead(ctx, tableName, key, nodes)
 	}
 
 	// Eventual: try to read locally if we're a replica
@@ -74,11 +91,20 @@ func (c *Coordinator) RouteGet(tableName, key, consistency string) (map[string]i
 	}
 
 	// Forward to the coordinator node
-	return c.forwardGet(nodes[0], tableName, key)
+	return c.forwardGet(ctx, nodes[0], tableName, key)
 }
 
 // RoutePut routes a PUT request for a key.
-func (c *Coordinator) RoutePut(tableName, key string, doc map[string]interface{}, consistency string) error {
+func (c *Coordinator) RoutePut(ctx context.Context, tableName, key string, doc map[string]interface{}, consistency string) error {
+	ctx, span := coordTracer.Start(ctx, "coordinator.route_put",
+		trace.WithAttributes(
+			attribute.String("table", tableName),
+			attribute.String("key", key),
+			attribute.String("consistency", consistency),
+		),
+	)
+	defer span.End()
+
 	nodes := c.ring.GetNodes(key, c.replN)
 	if len(nodes) == 0 {
 		return fmt.Errorf("no nodes available")
@@ -105,7 +131,7 @@ func (c *Coordinator) RoutePut(tableName, key string, doc map[string]interface{}
 	}
 
 	if consistency == "strong" {
-		return c.quorumWrite(tableName, key, doc, nodes)
+		return c.quorumWrite(ctx, tableName, key, doc, nodes)
 	}
 
 	// Eventual: async replicate to other nodes
@@ -115,14 +141,23 @@ func (c *Coordinator) RoutePut(tableName, key string, doc map[string]interface{}
 
 	// If we're not a replica, forward to coordinator
 	if !isReplica {
-		return c.forwardPut(nodes[0], tableName, key, doc)
+		return c.forwardPut(ctx, nodes[0], tableName, key, doc)
 	}
 
 	return nil
 }
 
 // RouteDelete routes a DELETE request for a key.
-func (c *Coordinator) RouteDelete(tableName, key, consistency string) error {
+func (c *Coordinator) RouteDelete(ctx context.Context, tableName, key, consistency string) error {
+	ctx, span := coordTracer.Start(ctx, "coordinator.route_delete",
+		trace.WithAttributes(
+			attribute.String("table", tableName),
+			attribute.String("key", key),
+			attribute.String("consistency", consistency),
+		),
+	)
+	defer span.End()
+
 	nodes := c.ring.GetNodes(key, c.replN)
 	if len(nodes) == 0 {
 		return fmt.Errorf("no nodes available")
@@ -148,7 +183,7 @@ func (c *Coordinator) RouteDelete(tableName, key, consistency string) error {
 	}
 
 	if consistency == "strong" {
-		return c.quorumDelete(tableName, key, nodes)
+		return c.quorumDelete(ctx, tableName, key, nodes)
 	}
 
 	// Eventual: async replicate delete
@@ -157,14 +192,14 @@ func (c *Coordinator) RouteDelete(tableName, key, consistency string) error {
 	}
 
 	if !isReplica {
-		return c.forwardDelete(nodes[0], tableName, key)
+		return c.forwardDelete(ctx, nodes[0], tableName, key)
 	}
 
 	return nil
 }
 
 // quorumRead reads from R replicas and returns the latest value.
-func (c *Coordinator) quorumRead(tableName, key string, nodes []string) (map[string]interface{}, error) {
+func (c *Coordinator) quorumRead(ctx context.Context, tableName, key string, nodes []string) (map[string]interface{}, error) {
 	type readResult struct {
 		doc map[string]interface{}
 		err error
@@ -186,7 +221,7 @@ func (c *Coordinator) quorumRead(tableName, key string, nodes []string) (map[str
 			}()
 		} else {
 			go func(nid string) {
-				doc, err := c.forwardGet(nid, tableName, key)
+				doc, err := c.forwardGet(ctx, nid, tableName, key)
 				results <- readResult{doc: doc, err: err}
 			}(nodeID)
 		}
@@ -212,7 +247,7 @@ func (c *Coordinator) quorumRead(tableName, key string, nodes []string) (map[str
 }
 
 // quorumWrite writes to W replicas synchronously.
-func (c *Coordinator) quorumWrite(tableName, key string, doc map[string]interface{}, nodes []string) error {
+func (c *Coordinator) quorumWrite(ctx context.Context, tableName, key string, doc map[string]interface{}, nodes []string) error {
 	results := make(chan error, len(nodes))
 	selfID := c.membership.SelfID()
 
@@ -228,7 +263,7 @@ func (c *Coordinator) quorumWrite(tableName, key string, doc map[string]interfac
 			}()
 		} else {
 			go func(nid string) {
-				results <- c.forwardPut(nid, tableName, key, doc)
+				results <- c.forwardPut(ctx, nid, tableName, key, doc)
 			}(nodeID)
 		}
 	}
@@ -247,7 +282,7 @@ func (c *Coordinator) quorumWrite(tableName, key string, doc map[string]interfac
 }
 
 // quorumDelete deletes from W replicas synchronously.
-func (c *Coordinator) quorumDelete(tableName, key string, nodes []string) error {
+func (c *Coordinator) quorumDelete(ctx context.Context, tableName, key string, nodes []string) error {
 	results := make(chan error, len(nodes))
 	selfID := c.membership.SelfID()
 
@@ -263,7 +298,7 @@ func (c *Coordinator) quorumDelete(tableName, key string, nodes []string) error 
 			}()
 		} else {
 			go func(nid string) {
-				results <- c.forwardDelete(nid, tableName, key)
+				results <- c.forwardDelete(ctx, nid, tableName, key)
 			}(nodeID)
 		}
 	}
@@ -281,22 +316,28 @@ func (c *Coordinator) quorumDelete(tableName, key string, nodes []string) error 
 	return fmt.Errorf("quorum delete failed: got %d/%d acks", successCount, c.writeQuorum)
 }
 
-// Forward helpers
-func (c *Coordinator) forwardGet(nodeID, tableName, key string) (map[string]interface{}, error) {
+// Forward helpers — inject trace context into outgoing requests.
+
+func (c *Coordinator) injectTrace(ctx context.Context, req *http.Request) {
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+}
+
+func (c *Coordinator) forwardGet(ctx context.Context, nodeID, tableName, key string) (map[string]interface{}, error) {
 	addr := c.membership.GetNodeAddr(nodeID)
 	if addr == "" {
 		return nil, fmt.Errorf("unknown node %s", nodeID)
 	}
 
 	url := fmt.Sprintf("http://%s/internal/v1/replicate?table=%s&key=%s&op=get", addr, tableName, key)
-	resp, err := c.client.Get(url)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	c.injectTrace(ctx, req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("forward get to %s: %w", nodeID, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
 		return nil, storage.ErrKeyNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -313,7 +354,7 @@ func (c *Coordinator) forwardGet(nodeID, tableName, key string) (map[string]inte
 	return result.Item, nil
 }
 
-func (c *Coordinator) forwardPut(nodeID, tableName, key string, doc map[string]interface{}) error {
+func (c *Coordinator) forwardPut(ctx context.Context, nodeID, tableName, key string, doc map[string]interface{}) error {
 	addr := c.membership.GetNodeAddr(nodeID)
 	if addr == "" {
 		return fmt.Errorf("unknown node %s", nodeID)
@@ -321,7 +362,10 @@ func (c *Coordinator) forwardPut(nodeID, tableName, key string, doc map[string]i
 
 	body, _ := json.Marshal(doc)
 	url := fmt.Sprintf("http://%s/internal/v1/replicate?table=%s&key=%s&op=put", addr, tableName, key)
-	resp, err := c.client.Post(url, "application/json", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.injectTrace(ctx, req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("forward put to %s: %w", nodeID, err)
 	}
@@ -333,14 +377,15 @@ func (c *Coordinator) forwardPut(nodeID, tableName, key string, doc map[string]i
 	return nil
 }
 
-func (c *Coordinator) forwardDelete(nodeID, tableName, key string) error {
+func (c *Coordinator) forwardDelete(ctx context.Context, nodeID, tableName, key string) error {
 	addr := c.membership.GetNodeAddr(nodeID)
 	if addr == "" {
 		return fmt.Errorf("unknown node %s", nodeID)
 	}
 
 	url := fmt.Sprintf("http://%s/internal/v1/replicate?table=%s&key=%s&op=delete", addr, tableName, key)
-	req, _ := http.NewRequest(http.MethodDelete, url, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	c.injectTrace(ctx, req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("forward delete to %s: %w", nodeID, err)
@@ -373,8 +418,9 @@ func (c *Coordinator) RegisterInternalRoutes(router interface {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Replication endpoint
+	// Replication endpoint — extract trace context, record metrics, start span.
 	replicateHandler := func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		tableName := r.URL.Query().Get("table")
 		key := r.URL.Query().Get("key")
 		op := r.URL.Query().Get("op")
@@ -384,15 +430,37 @@ func (c *Coordinator) RegisterInternalRoutes(router interface {
 			return
 		}
 
+		// Extract incoming trace context and start a child span
+		prop := otel.GetTextMapPropagator()
+		ctx := prop.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		ctx, span := coordTracer.Start(ctx, "replicate",
+			trace.WithAttributes(
+				attribute.String("op", op),
+				attribute.String("table", tableName),
+				attribute.String("key", key),
+			),
+		)
+		defer span.End()
+		_ = ctx // ctx available for any downstream use
+
+		result := "success"
+		defer func() {
+			dur := time.Since(start).Seconds()
+			metrics.ReplicationReceivedTotal.WithLabelValues(op, result).Inc()
+			metrics.ReplicationReceivedDuration.WithLabelValues(op, result).Observe(dur)
+		}()
+
 		switch op {
 		case "get":
 			t, err := c.tableManager.GetTable(tableName)
 			if err != nil {
+				result = "error"
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			doc, err := t.GetItem(key)
 			if err != nil {
+				result = "error"
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
@@ -403,15 +471,18 @@ func (c *Coordinator) RegisterInternalRoutes(router interface {
 			body, _ := io.ReadAll(r.Body)
 			var doc map[string]interface{}
 			if err := json.Unmarshal(body, &doc); err != nil {
+				result = "error"
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
 			t, err := c.tableManager.GetTable(tableName)
 			if err != nil {
+				result = "error"
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			if err := t.PutItem(key, doc); err != nil {
+				result = "error"
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -420,15 +491,18 @@ func (c *Coordinator) RegisterInternalRoutes(router interface {
 		case "delete":
 			t, err := c.tableManager.GetTable(tableName)
 			if err != nil {
+				result = "error"
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
 			if err := t.DeleteItem(key); err != nil {
+				result = "error"
 				log.Printf("replicate delete %s/%s: %v", tableName, key, err)
 			}
 			w.WriteHeader(http.StatusOK)
 
 		default:
+			result = "error"
 			http.Error(w, "unknown op", http.StatusBadRequest)
 		}
 	}

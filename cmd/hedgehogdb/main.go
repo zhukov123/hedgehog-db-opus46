@@ -17,7 +17,15 @@ import (
 	"github.com/hedgehog-db/hedgehog/internal/api"
 	"github.com/hedgehog-db/hedgehog/internal/cluster"
 	"github.com/hedgehog-db/hedgehog/internal/config"
+	"github.com/hedgehog-db/hedgehog/internal/metrics"
 	"github.com/hedgehog-db/hedgehog/internal/table"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 
@@ -59,6 +67,46 @@ func main() {
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid config: %v", err)
+	}
+
+	// --- OpenTelemetry tracer provider ---
+	otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otlpEndpoint == "" {
+		otlpEndpoint = "localhost:4318"
+	}
+	traceExporter, err := otlptracehttp.New(
+		context.Background(),
+		otlptracehttp.WithEndpoint(otlpEndpoint),
+		otlptracehttp.WithInsecure(),
+	)
+	if err != nil {
+		log.Printf("WARNING: failed to create OTLP exporter (traces disabled): %v", err)
+	} else {
+		res, _ := resource.Merge(
+			resource.Default(),
+			resource.NewWithAttributes(
+				semconv.SchemaURL,
+				semconv.ServiceName("hedgehogdb"),
+				semconv.ServiceInstanceID(cfg.NodeID),
+			),
+		)
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithBatcher(traceExporter),
+			sdktrace.WithResource(res),
+		)
+		otel.SetTracerProvider(tp)
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+			propagation.Baggage{},
+		))
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tp.Shutdown(shutdownCtx); err != nil {
+				log.Printf("Tracer provider shutdown error: %v", err)
+			}
+		}()
+		log.Printf("OpenTelemetry tracing enabled (OTLP endpoint: %s)", otlpEndpoint)
 	}
 
 	// Ensure data directory exists
@@ -114,6 +162,11 @@ func main() {
 	// Register cluster routes
 	coordinator.RegisterInternalRoutes(server.Router())
 	antiEntropy.RegisterRoutes(server.Router())
+
+	// Prometheus metrics endpoint
+	server.Router().GET("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		metrics.Handler().ServeHTTP(w, r)
+	})
 
 	// Serve embedded web UI
 	webFS := &hedgehog.WebDist

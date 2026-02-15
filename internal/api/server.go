@@ -22,10 +22,13 @@ type Server struct {
 func NewServer(bindAddr string, tm *table.TableManager, coordinator ItemCoordinator) *Server {
 	router := NewRouter()
 
-	// Apply middleware
+	// Apply middleware (outermost runs first)
 	router.Use(RecoveryMiddleware)
-	router.Use(LoggingMiddleware)
 	router.Use(CORSMiddleware)
+	router.Use(TraceIDMiddleware)
+	router.Use(TracingMiddleware)
+	router.Use(MetricsMiddleware)
+	router.Use(LoggingMiddleware)
 
 	handlers := NewHandlers(tm, coordinator)
 

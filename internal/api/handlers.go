@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,9 +14,9 @@ import (
 // ItemCoordinator routes item operations through the cluster (replication, forwarding).
 // When nil, handlers use the table manager directly (standalone mode).
 type ItemCoordinator interface {
-	RoutePut(tableName, key string, doc map[string]interface{}, consistency string) error
-	RouteGet(tableName, key, consistency string) (map[string]interface{}, error)
-	RouteDelete(tableName, key, consistency string) error
+	RoutePut(ctx context.Context, tableName, key string, doc map[string]interface{}, consistency string) error
+	RouteGet(ctx context.Context, tableName, key, consistency string) (map[string]interface{}, error)
+	RouteDelete(ctx context.Context, tableName, key, consistency string) error
 }
 
 // Handlers holds the API handler dependencies.
@@ -99,7 +100,7 @@ func (h *Handlers) GetItem(w http.ResponseWriter, r *http.Request) {
 	key := Param(r, "key")
 
 	if h.coordinator != nil {
-		doc, err := h.coordinator.RouteGet(tableName, key, parseConsistency(r))
+		doc, err := h.coordinator.RouteGet(r.Context(), tableName, key, parseConsistency(r))
 		if err != nil {
 			if err == storage.ErrKeyNotFound {
 				writeError(w, http.StatusNotFound, fmt.Sprintf("item %q not found", key))
@@ -155,7 +156,7 @@ func (h *Handlers) PutItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.coordinator != nil {
-		if err := h.coordinator.RoutePut(tableName, key, doc, parseConsistency(r)); err != nil {
+		if err := h.coordinator.RoutePut(r.Context(), tableName, key, doc, parseConsistency(r)); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -189,7 +190,7 @@ func (h *Handlers) DeleteItem(w http.ResponseWriter, r *http.Request) {
 	key := Param(r, "key")
 
 	if h.coordinator != nil {
-		if err := h.coordinator.RouteDelete(tableName, key, parseConsistency(r)); err != nil {
+		if err := h.coordinator.RouteDelete(r.Context(), tableName, key, parseConsistency(r)); err != nil {
 			if err == storage.ErrKeyNotFound {
 				writeError(w, http.StatusNotFound, fmt.Sprintf("item %q not found", key))
 				return

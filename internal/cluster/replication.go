@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/hedgehog-db/hedgehog/internal/metrics"
 )
 
 // HintedHandoff stores writes for unavailable nodes.
@@ -128,6 +130,8 @@ func (r *Replicator) ReplicateWrite(tableName, key string, doc map[string]interf
 				Doc:       doc,
 				Timestamp: time.Now(),
 			})
+			metrics.ReplicationSendTotal.WithLabelValues("put", nodeID, "hinted").Inc()
+			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 			log.Printf("Stored hint for down node %s: put %s/%s", nodeID, tableName, key)
 			continue
 		}
@@ -142,6 +146,7 @@ func (r *Replicator) ReplicateWrite(tableName, key string, doc map[string]interf
 		resp, err := r.client.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			log.Printf("Replicate write to %s failed: %v", nodeID, err)
+			metrics.ReplicationSendTotal.WithLabelValues("put", nodeID, "error").Inc()
 			r.handoff.AddHint(nodeID, hint{
 				TableName: tableName,
 				Key:       key,
@@ -149,9 +154,11 @@ func (r *Replicator) ReplicateWrite(tableName, key string, doc map[string]interf
 				Doc:       doc,
 				Timestamp: time.Now(),
 			})
+			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 			continue
 		}
 		resp.Body.Close()
+		metrics.ReplicationSendTotal.WithLabelValues("put", nodeID, "success").Inc()
 	}
 }
 
@@ -170,6 +177,8 @@ func (r *Replicator) ReplicateDelete(tableName, key string, nodes []string) {
 				Op:        "delete",
 				Timestamp: time.Now(),
 			})
+			metrics.ReplicationSendTotal.WithLabelValues("delete", nodeID, "hinted").Inc()
+			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 			continue
 		}
 
@@ -183,15 +192,18 @@ func (r *Replicator) ReplicateDelete(tableName, key string, nodes []string) {
 		resp, err := r.client.Do(req)
 		if err != nil {
 			log.Printf("Replicate delete to %s failed: %v", nodeID, err)
+			metrics.ReplicationSendTotal.WithLabelValues("delete", nodeID, "error").Inc()
 			r.handoff.AddHint(nodeID, hint{
 				TableName: tableName,
 				Key:       key,
 				Op:        "delete",
 				Timestamp: time.Now(),
 			})
+			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 			continue
 		}
 		resp.Body.Close()
+		metrics.ReplicationSendTotal.WithLabelValues("delete", nodeID, "success").Inc()
 	}
 }
 
@@ -217,10 +229,13 @@ func (r *Replicator) ReplayHints(nodeID string) {
 			resp, err := r.client.Post(url, "application/json", bytes.NewReader(body))
 			if err != nil {
 				log.Printf("Hint replay to %s failed: %v", nodeID, err)
+				metrics.ReplicationHintReplayTotal.WithLabelValues(nodeID, "error").Inc()
 				r.handoff.AddHint(nodeID, h)
+				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 				return
 			}
 			resp.Body.Close()
+			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "put").Inc()
 
 		case "delete":
 			url := fmt.Sprintf("http://%s/internal/v1/replicate?table=%s&key=%s&op=delete", addr, h.TableName, h.Key)
@@ -228,12 +243,18 @@ func (r *Replicator) ReplayHints(nodeID string) {
 			resp, err := r.client.Do(req)
 			if err != nil {
 				log.Printf("Hint replay to %s failed: %v", nodeID, err)
+				metrics.ReplicationHintReplayTotal.WithLabelValues(nodeID, "error").Inc()
 				r.handoff.AddHint(nodeID, h)
+				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 				return
 			}
 			resp.Body.Close()
+			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "delete").Inc()
 		}
 	}
+
+	metrics.ReplicationHintReplayTotal.WithLabelValues(nodeID, "success").Inc()
+	metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
 }
 
 // Handoff returns the hinted handoff store.

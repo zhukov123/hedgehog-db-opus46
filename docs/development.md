@@ -5,7 +5,7 @@
 - Go 1.21+ (`go version`)
 - Node.js 18+ and npm (`node --version`, `npm --version`)
 
-No external Go dependencies. The entire database engine uses only the standard library.
+External Go dependencies: Prometheus client (`github.com/prometheus/client_golang`), OpenTelemetry (`go.opentelemetry.io/otel`), and Google UUID (`github.com/google/uuid`). The core storage engine uses only the standard library.
 
 ## Build
 
@@ -237,6 +237,61 @@ Node node-3 declared dead
 2. Add page key to the `Page` type union in `App.tsx`
 3. Add nav button and conditional render in `App.tsx`
 4. Add any needed API methods to `web/src/lib/api.ts`
+
+## Observability
+
+HedgehogDB includes built-in Prometheus metrics and OpenTelemetry distributed tracing. For full details, see [metrics-and-observability.md](metrics-and-observability.md).
+
+### Quick Start
+
+1. **Start the monitoring stack** (Prometheus, Grafana, Tempo):
+
+```bash
+cd monitoring
+docker compose up -d
+```
+
+This starts:
+- **Prometheus** on `http://localhost:9090` — scrapes `/metrics` from your cluster nodes
+- **Grafana** on `http://localhost:3001` — dashboards and trace exploration (admin/admin)
+- **Tempo** on `http://localhost:3200` — receives traces via OTLP on port 4318
+
+2. **Start HedgehogDB** (the OTLP endpoint defaults to `localhost:4318`):
+
+```bash
+make cluster
+```
+
+Or to override the OTLP endpoint:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318 ./bin/hedgehogdb -node-id node-1 -bind 0.0.0.0:8081 -data-dir ./data/node1
+```
+
+3. **Configure Grafana data sources** (first time only):
+   - Open `http://localhost:3001` and log in (admin/admin)
+   - Add **Prometheus** data source: URL = `http://prometheus:9090`
+   - Add **Tempo** data source: URL = `http://tempo:3200`
+
+4. **View metrics**: Prometheus queries like `rate(hedgehog_http_requests_total[5m])`, `histogram_quantile(0.95, rate(hedgehog_http_request_duration_seconds_bucket[5m]))`.
+
+5. **View traces**: In Grafana Explore, select the Tempo data source and search by service name `hedgehogdb`.
+
+### Endpoints
+
+- `GET /metrics` — Prometheus metrics (exposed on each node)
+- Response headers `X-Request-ID` and `X-Trace-ID` on all API responses
+
+### Available Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `hedgehog_http_requests_total` | Counter | HTTP requests by method, operation, status, table |
+| `hedgehog_http_request_duration_seconds` | Histogram | HTTP latency by method, operation, status, table |
+| `hedgehog_replication_send_total` | Counter | Outgoing replication attempts |
+| `hedgehog_replication_hinted_handoff_pending` | Gauge | Pending hinted handoff per node |
+| `hedgehog_replication_received_total` | Counter | Incoming replication requests |
+| `hedgehog_replication_received_duration_seconds` | Histogram | Incoming replication latency |
 
 ## Known Limitations & Future Work
 
