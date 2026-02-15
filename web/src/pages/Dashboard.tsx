@@ -5,6 +5,8 @@ export default function Dashboard() {
   const [tables, setTables] = useState<TableMeta[]>([]);
   const [cluster, setCluster] = useState<ClusterStatus | null>(null);
   const [healthy, setHealthy] = useState<boolean | null>(null);
+  const [tableCounts, setTableCounts] = useState<Record<string, number>>({});
+  const [totalItems, setTotalItems] = useState<number | null>(null);
 
   useEffect(() => {
     api.listTables().then(setTables).catch(() => {});
@@ -12,17 +14,45 @@ export default function Dashboard() {
     api.health().then(() => setHealthy(true)).catch(() => setHealthy(false));
   }, []);
 
+  useEffect(() => {
+    if (tables.length === 0) {
+      setTableCounts({});
+      setTotalItems(0);
+      return;
+    }
+    let cancelled = false;
+    const counts: Record<string, number> = {};
+    Promise.all(
+      tables.map(t =>
+        api.getTableCount(t.name).then(c => {
+          if (!cancelled) counts[t.name] = c;
+        })
+      )
+    ).then(() => {
+      if (!cancelled) {
+        setTableCounts(counts);
+        setTotalItems(Object.values(counts).reduce((a, b) => a + b, 0));
+      }
+    });
+    return () => { cancelled = true; };
+  }, [tables]);
+
   const aliveNodes = cluster?.nodes?.filter(n => n.status === 0).length ?? 0;
 
   return (
     <div>
       <h1 className="text-3xl font-bold text-gray-900 mb-8">Dashboard</h1>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         <StatCard
           label="Tables"
           value={tables.length}
           color="bg-blue-500"
+        />
+        <StatCard
+          label="Total Items"
+          value={totalItems === null ? '...' : totalItems}
+          color="bg-amber-500"
         />
         <StatCard
           label="Cluster Nodes"
@@ -67,9 +97,18 @@ export default function Dashboard() {
             {tables.map(t => (
               <div key={t.name} className="flex justify-between items-center p-3 bg-gray-50 rounded">
                 <span className="font-mono font-medium">{t.name}</span>
-                <span className="text-sm text-gray-500">
-                  Created: {new Date(t.created_at).toLocaleDateString()}
-                </span>
+                <div className="flex items-center gap-4">
+                  <span className="text-sm font-medium">
+                    {tableCounts[t.name] !== undefined ? (
+                      <span title="Live count (B+ tree)">{tableCounts[t.name]} items</span>
+                    ) : (
+                      <span className="text-gray-400">…</span>
+                    )}
+                  </span>
+                  <span className="text-sm text-gray-500">
+                    Created: {new Date(t.created_at).toLocaleDateString()}
+                  </span>
+                </div>
               </div>
             ))}
           </div>

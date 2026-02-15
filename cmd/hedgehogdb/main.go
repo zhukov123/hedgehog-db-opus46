@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -142,6 +143,109 @@ func main() {
 		})
 	})
 
+	// Cluster-wide table scan: merge items from all nodes so the UI shows full count
+	clusterScanClient := &http.Client{Timeout: 10 * time.Second}
+	server.Router().GET("/api/v1/cluster/tables/{name}/items", func(w http.ResponseWriter, r *http.Request) {
+		tableName := api.Param(r, "name")
+		if tableName == "" {
+			http.Error(w, `{"error":"table name required"}`, http.StatusBadRequest)
+			return
+		}
+		nodes := membership.GetAllNodes()
+		merged := make(map[string]map[string]interface{}) // key -> { "key": k, "item": doc }
+		for _, node := range nodes {
+			base := strings.TrimSpace(node.Addr)
+			if base == "" {
+				continue
+			}
+			if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+				base = "http://" + base
+			}
+			base = strings.TrimSuffix(base, "/")
+			url := base + "/api/v1/tables/" + tableName + "/items"
+			resp, err := clusterScanClient.Get(url)
+			if err != nil {
+				continue
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				continue
+			}
+			var data struct {
+				Items []struct {
+					Key  string                 `json:"key"`
+					Item map[string]interface{} `json:"item"`
+				} `json:"items"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+				resp.Body.Close()
+				continue
+			}
+			resp.Body.Close()
+			for _, e := range data.Items {
+				merged[e.Key] = map[string]interface{}{"key": e.Key, "item": e.Item}
+			}
+		}
+		items := make([]map[string]interface{}, 0, len(merged))
+		for _, v := range merged {
+			items = append(items, v)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			ki, _ := items[i]["key"].(string)
+			kj, _ := items[j]["key"].(string)
+			return ki < kj
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": items,
+			"count": len(items),
+		})
+	})
+
+	// Per-node table counts for verification (e.g. curl http://localhost:8081/api/v1/cluster/table-counts)
+	server.Router().GET("/api/v1/cluster/table-counts", func(w http.ResponseWriter, r *http.Request) {
+		nodes := membership.GetAllNodes()
+		tables := []string{"users", "products", "orders"}
+		result := make(map[string]map[string]int)
+		for _, name := range tables {
+			result[name] = make(map[string]int)
+		}
+		for _, node := range nodes {
+			base := strings.TrimSpace(node.Addr)
+			if base == "" {
+				continue
+			}
+			if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+				base = "http://" + base
+			}
+			base = strings.TrimSuffix(base, "/")
+			for _, name := range tables {
+				resp, err := clusterScanClient.Get(base + "/api/v1/tables/" + name + "/count")
+				if err != nil {
+					result[name][node.ID] = -1
+					continue
+				}
+				if resp.StatusCode != http.StatusOK {
+					resp.Body.Close()
+					result[name][node.ID] = -1
+					continue
+				}
+				var data struct {
+					Count int `json:"count"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+					resp.Body.Close()
+					result[name][node.ID] = -1
+					continue
+				}
+				resp.Body.Close()
+				result[name][node.ID] = data.Count
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
 	server.Router().POST("/api/v1/cluster/nodes", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			NodeID string `json:"node_id"`
@@ -156,6 +260,71 @@ func main() {
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{
 			"message": "node added",
+		})
+	})
+
+	server.Router().DELETE("/api/v1/cluster/nodes/{node_id}", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := api.Param(r, "node_id")
+		if nodeID == "" {
+			http.Error(w, `{"error":"node_id required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := membership.RemoveNode(nodeID); err != nil {
+			if err == cluster.ErrCannotRemoveSelf {
+				http.Error(w, `{"error":"cannot remove self from cluster"}`, http.StatusBadRequest)
+				return
+			}
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "node removed",
+		})
+	})
+
+	// Debug endpoints
+	server.Router().GET("/api/v1/debug/replica-nodes", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, `{"error":"key query param required"}`, http.StatusBadRequest)
+			return
+		}
+		nodes := ring.GetNodes(key, cfg.ReplicationN)
+		primary := ""
+		replicas := make([]string, 0)
+		if len(nodes) > 0 {
+			primary = nodes[0]
+			replicas = nodes[1:]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"primary":  primary,
+			"replicas": replicas,
+		})
+	})
+
+	server.Router().GET("/api/v1/debug/replication-backlog", func(w http.ResponseWriter, r *http.Request) {
+		handoff := replicator.Handoff()
+		pendingPerNode := handoff.PendingCounts()
+		hints := handoff.PendingHints()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"pending_per_node": pendingPerNode,
+			"hints":            hints,
+		})
+	})
+
+	server.Router().POST("/api/v1/debug/replay-hints/{node_id}", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := api.Param(r, "node_id")
+		if nodeID == "" {
+			http.Error(w, `{"error":"node_id required"}`, http.StatusBadRequest)
+			return
+		}
+		replicator.ReplayHints(nodeID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "hint replay triggered",
 		})
 	})
 

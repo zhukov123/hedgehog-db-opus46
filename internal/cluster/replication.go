@@ -54,6 +54,45 @@ func (hh *HintedHandoff) PendingCount(nodeID string) int {
 	return len(hh.hints[nodeID])
 }
 
+// HintSummary is a read-only summary of a pending hint for API exposure.
+type HintSummary struct {
+	TableName string    `json:"table_name"`
+	Key       string    `json:"key"`
+	Op        string    `json:"op"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// PendingCounts returns the number of pending hints per node.
+func (hh *HintedHandoff) PendingCounts() map[string]int {
+	hh.mu.Lock()
+	defer hh.mu.Unlock()
+	result := make(map[string]int)
+	for nodeID, hints := range hh.hints {
+		result[nodeID] = len(hints)
+	}
+	return result
+}
+
+// PendingHints returns hint summaries per node for API exposure.
+func (hh *HintedHandoff) PendingHints() map[string][]HintSummary {
+	hh.mu.Lock()
+	defer hh.mu.Unlock()
+	result := make(map[string][]HintSummary)
+	for nodeID, hints := range hh.hints {
+		summaries := make([]HintSummary, 0, len(hints))
+		for _, h := range hints {
+			summaries = append(summaries, HintSummary{
+				TableName: h.TableName,
+				Key:       h.Key,
+				Op:        h.Op,
+				Timestamp: h.Timestamp,
+			})
+		}
+		result[nodeID] = summaries
+	}
+	return result
+}
+
 // Replicator handles data replication to peer nodes.
 type Replicator struct {
 	membership *Membership

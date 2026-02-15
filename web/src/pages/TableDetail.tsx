@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type ItemEntry } from '../lib/api';
+import { api, type ItemEntry, type ReplicaNodesResponse } from '../lib/api';
 
 interface TableDetailProps {
   tableName: string;
@@ -17,15 +17,39 @@ export default function TableDetail({ tableName, onBack }: TableDetailProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
 
-  const loadItems = () => {
-    setLoading(true);
-    api.scanItems(tableName)
+  // Replica nodes debug
+  const [replicaKey, setReplicaKey] = useState('');
+  const [replicaResult, setReplicaResult] = useState<ReplicaNodesResponse | null>(null);
+  const [replicaLoading, setReplicaLoading] = useState(false);
+  const [clusterNodeId, setClusterNodeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.clusterStatus().then(s => setClusterNodeId(s.node_id)).catch(() => {});
+  }, []);
+
+  const loadItems = (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    // Use cluster scan when multiple nodes so item count matches trafficgen (full cluster view)
+    api.clusterStatus()
+      .then(status =>
+        status.total_nodes > 1
+          ? api.scanItemsCluster(tableName)
+          : api.scanItems(tableName)
+      )
       .then(setItems)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   };
 
-  useEffect(loadItems, [tableName]);
+  useEffect(() => {
+    loadItems();
+  }, [tableName]);
+
+  // Auto-refresh so new keys from trafficgen (or other clients) appear
+  useEffect(() => {
+    const interval = setInterval(() => loadItems(false), 3000);
+    return () => clearInterval(interval);
+  }, [tableName]);
 
   const handlePut = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,7 +96,7 @@ export default function TableDetail({ tableName, onBack }: TableDetailProps) {
 
   return (
     <div>
-      <div className="flex items-center gap-4 mb-8">
+      <div className="flex flex-wrap items-center gap-4 mb-8">
         <button
           onClick={onBack}
           className="text-gray-500 hover:text-gray-700"
@@ -83,11 +107,76 @@ export default function TableDetail({ tableName, onBack }: TableDetailProps) {
           <span className="font-mono">{tableName}</span>
         </h1>
         <span className="text-sm text-gray-400">{items.length} items</span>
+        <button
+          type="button"
+          onClick={() => loadItems()}
+          className="shrink-0 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+        >
+          Refresh
+        </button>
       </div>
 
       {error && (
         <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg">{error}</div>
       )}
+
+      {/* Replica Nodes Debug */}
+      <div className="bg-white rounded-lg shadow p-6 mb-6 border-l-4 border-amber-400">
+        <h2 className="text-lg font-semibold mb-2">Replica Nodes (Debug)</h2>
+        <p className="text-sm text-gray-500 mb-3">See which nodes hold replicas of a key</p>
+        <div className="flex flex-wrap gap-3 items-center">
+          <input
+            type="text"
+            value={replicaKey}
+            onChange={e => setReplicaKey(e.target.value)}
+            placeholder="Item key..."
+            className="px-3 py-2 border rounded font-mono text-sm w-48"
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              if (!replicaKey.trim()) return;
+              setReplicaLoading(true);
+              setReplicaResult(null);
+              try {
+                const res = await api.getReplicaNodes(replicaKey.trim());
+                setReplicaResult(res);
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setReplicaLoading(false);
+              }
+            }}
+            disabled={replicaLoading || !replicaKey.trim()}
+            className="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 text-sm"
+          >
+            {replicaLoading ? 'Loading...' : 'Show replicas'}
+          </button>
+          {replicaResult && (
+            <div className="flex flex-wrap gap-4 items-center text-sm">
+              <span>
+                <span className="text-gray-500">Primary:</span>{' '}
+                <span className={`font-mono ${replicaResult.primary === clusterNodeId ? 'text-blue-600 font-medium' : ''}`}>
+                  {replicaResult.primary || '(none)'}
+                  {replicaResult.primary === clusterNodeId && ' (this node)'}
+                </span>
+              </span>
+              <span>
+                <span className="text-gray-500">Replicas:</span>{' '}
+                <span className="font-mono">
+                  {replicaResult.replicas.length > 0
+                    ? replicaResult.replicas.map(r => (
+                        <span key={r} className={r === clusterNodeId ? 'text-blue-600 font-medium' : ''}>
+                          {r}{r === clusterNodeId ? ' (this node)' : ''}{' '}
+                        </span>
+                      ))
+                    : '(none)'}
+                </span>
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Add Item Form */}
       <div className="bg-white rounded-lg shadow p-6 mb-6">
@@ -161,6 +250,25 @@ export default function TableDetail({ tableName, onBack }: TableDetailProps) {
               <div className="flex justify-between items-start mb-2">
                 <span className="font-mono font-medium text-blue-600">{entry.key}</span>
                 <div className="flex gap-2">
+                  <button
+                    onClick={async () => {
+                      setReplicaKey(entry.key);
+                      setReplicaLoading(true);
+                      setReplicaResult(null);
+                      try {
+                        const res = await api.getReplicaNodes(entry.key);
+                        setReplicaResult(res);
+                      } catch (e) {
+                        setError((e as Error).message);
+                      } finally {
+                        setReplicaLoading(false);
+                      }
+                    }}
+                    className="text-sm text-gray-500 hover:text-amber-600"
+                    title="Look up replica nodes for this key"
+                  >
+                    Replicas
+                  </button>
                   <button
                     onClick={() => handleEdit(entry)}
                     className="text-sm text-gray-500 hover:text-blue-600"

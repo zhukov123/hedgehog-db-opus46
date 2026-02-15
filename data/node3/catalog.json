@@ -1,0 +1,17 @@
+{
+  "orders": {
+    "name": "orders",
+    "created_at": "2026-02-13T08:27:18.972822-05:00",
+    "item_count": 0
+  },
+  "products": {
+    "name": "products",
+    "created_at": "2026-02-13T08:27:18.972523-05:00",
+    "item_count": 0
+  },
+  "users": {
+    "name": "users",
+    "created_at": "2026-02-13T08:27:18.97214-05:00",
+    "item_count": 0
+  }
+}

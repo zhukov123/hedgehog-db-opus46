@@ -17,6 +17,7 @@ make clean          # Remove binaries and data directories
 Outputs:
 - `./bin/hedgehogdb` — server binary
 - `./bin/hedgehogctl` — CLI tool
+- `./bin/trafficgen` — live traffic generator for demo tables
 
 ## Run
 
@@ -47,6 +48,41 @@ HEDGEHOG_URL=http://localhost:8081 bash scripts/seed-data.sh
 ```
 
 Creates tables: users (20 items), products (10 items), orders (15 items).
+
+### Live Traffic Generator
+
+Generate configurable insert/update/delete load against the three demo tables (users, products, orders). Default rates keep **inserts > updates + deletes** so data grows over time.
+
+```bash
+./bin/trafficgen
+# or with custom rates
+./bin/trafficgen -inserts 10 -updates 3 -deletes 1
+# single node
+./bin/trafficgen   # default: http://localhost:8081 (first cluster node)
+# round-robin across cluster nodes
+./bin/trafficgen -urls http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083
+```
+
+Flags:
+- `-url` — base URL when not using `-urls` (default: `http://localhost:8081`, first cluster node; or `HEDGEHOG_URL`)
+- `-urls` — comma-separated node URLs to round-robin across (overrides `-url` for traffic; table create/scan use first URL)
+- `-inserts` — inserts per second (default: 5; keep > updates+deletes so data grows)
+- `-updates` — updates per second (default: 2)
+- `-deletes` — deletes per second (default: 1)
+
+At startup the tool logs **which node(s)** it is hitting. With a **single URL** (e.g. default 8081), it discovers the full cluster via `GET /api/v1/cluster/status` and then **sends traffic to all nodes** (round-robin), so table counts grow on every node. It also creates the demo tables on every node so node 2 and 3 show tables in the UI. Stats are logged every 5 seconds. Stop with Ctrl+C.
+
+**Verify traffic on all nodes:**
+
+```bash
+# API: per-node table counts (call from any node)
+curl http://localhost:8081/api/v1/cluster/table-counts
+
+# Script: run trafficgen 15s and assert all nodes have table counts
+./scripts/verify-traffic.sh http://localhost:8081
+```
+
+Response shape: `{"users":{"node-1":100,"node-2":95,...},"products":{...},"orders":{...}}`. Use this to confirm tables exist on all nodes and counts are increasing.
 
 ## Test
 

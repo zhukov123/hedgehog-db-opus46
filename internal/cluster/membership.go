@@ -3,12 +3,15 @@ package cluster
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 )
+
+var ErrCannotRemoveSelf = errors.New("cannot remove self from cluster")
 
 // NodeStatus represents the state of a cluster node.
 type NodeStatus int
@@ -114,6 +117,26 @@ func (m *Membership) AddNode(id, addr string) {
 	log.Printf("Node %s (%s) joined the cluster", id, addr)
 }
 
+// RemoveNode removes a node from the cluster (membership and ring).
+// Returns ErrCannotRemoveSelf if attempting to remove this node.
+func (m *Membership) RemoveNode(nodeID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if nodeID == m.selfID {
+		return ErrCannotRemoveSelf
+	}
+
+	if _, exists := m.nodes[nodeID]; !exists {
+		return nil
+	}
+
+	delete(m.nodes, nodeID)
+	m.ring.RemoveNode(nodeID)
+	log.Printf("Node %s removed from cluster", nodeID)
+	return nil
+}
+
 // HandleHeartbeat processes an incoming heartbeat.
 func (m *Membership) HandleHeartbeat(fromID, fromAddr string) {
 	m.mu.Lock()
@@ -121,6 +144,12 @@ func (m *Membership) HandleHeartbeat(fromID, fromAddr string) {
 
 	node, exists := m.nodes[fromID]
 	if !exists {
+		// If we had this address as a seed (id "seed-<addr>"), remove it so we don't show duplicate entries
+		seedID := "seed-" + fromAddr
+		if seed, ok := m.nodes[seedID]; ok && seed.Addr == fromAddr {
+			delete(m.nodes, seedID)
+			m.ring.RemoveNode(seedID)
+		}
 		m.nodes[fromID] = &NodeInfo{
 			ID:       fromID,
 			Addr:     fromAddr,

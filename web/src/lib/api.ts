@@ -29,6 +29,23 @@ export interface ItemEntry {
   item: Record<string, unknown>;
 }
 
+export interface HintSummary {
+  table_name: string;
+  key: string;
+  op: string;
+  timestamp: string;
+}
+
+export interface ReplicaNodesResponse {
+  primary: string;
+  replicas: string[];
+}
+
+export interface ReplicationBacklogResponse {
+  pending_per_node: Record<string, number>;
+  hints: Record<string, HintSummary[]>;
+}
+
 async function request(method: string, path: string, body?: unknown) {
   const opts: RequestInit = {
     method,
@@ -79,6 +96,12 @@ export const api = {
     return data.items || [];
   },
 
+  /** Scan items from all cluster nodes (merged by key). Use when total_nodes > 1 so count matches trafficgen. */
+  async scanItemsCluster(table: string): Promise<ItemEntry[]> {
+    const data = await request('GET', `/api/v1/cluster/tables/${table}/items`);
+    return data.items || [];
+  },
+
   // Cluster
   async clusterStatus(): Promise<ClusterStatus> {
     return request('GET', '/api/v1/cluster/status');
@@ -87,6 +110,32 @@ export const api = {
   async clusterNodes(): Promise<ClusterNode[]> {
     const data = await request('GET', '/api/v1/cluster/nodes');
     return data.nodes || [];
+  },
+
+  async addClusterNode(nodeId: string, addr: string): Promise<void> {
+    await request('POST', '/api/v1/cluster/nodes', { node_id: nodeId, addr });
+  },
+
+  async removeClusterNode(nodeId: string): Promise<void> {
+    await request('DELETE', `/api/v1/cluster/nodes/${encodeURIComponent(nodeId)}`);
+  },
+
+  // Debug
+  async getReplicaNodes(key: string): Promise<ReplicaNodesResponse> {
+    return request('GET', `/api/v1/debug/replica-nodes?key=${encodeURIComponent(key)}`);
+  },
+
+  async getReplicationBacklog(): Promise<ReplicationBacklogResponse> {
+    return request('GET', '/api/v1/debug/replication-backlog');
+  },
+
+  async getTableCount(table: string): Promise<number> {
+    const data = await request('GET', `/api/v1/tables/${encodeURIComponent(table)}/count`);
+    return data.count ?? 0;
+  },
+
+  async replayHints(nodeId: string): Promise<void> {
+    await request('POST', `/api/v1/debug/replay-hints/${encodeURIComponent(nodeId)}`);
   },
 
   // Health

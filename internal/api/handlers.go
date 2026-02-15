@@ -162,6 +162,25 @@ func (h *Handlers) DeleteItem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// TableCount handles GET /api/v1/tables/{name}/count
+func (h *Handlers) TableCount(w http.ResponseWriter, r *http.Request) {
+	tableName := Param(r, "name")
+
+	t, err := h.tableManager.GetTable(tableName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	n, err := t.Count()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"count": n})
+}
+
 // ScanItems handles GET /api/v1/tables/{name}/items
 func (h *Handlers) ScanItems(w http.ResponseWriter, r *http.Request) {
 	tableName := Param(r, "name")

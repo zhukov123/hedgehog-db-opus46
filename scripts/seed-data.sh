@@ -2,6 +2,8 @@
 set -e
 
 BASE_URL="${HEDGEHOG_URL:-http://localhost:8080}"
+# Create tables on all cluster nodes so node 2 and 3 have tables too (8081 8082 8083)
+CLUSTER_PORTS="${CLUSTER_PORTS:-8081 8082 8083}"
 CTL="./bin/hedgehogctl"
 
 if [ ! -f "$CTL" ]; then
@@ -11,11 +13,18 @@ fi
 
 echo "Seeding data to $BASE_URL..."
 
-# Create tables
-echo "Creating tables..."
-$CTL create-table users
-$CTL create-table products
-$CTL create-table orders
+# Create tables on every cluster node so node 2 and 3 UIs show tables
+echo "Creating tables on all nodes..."
+for port in $CLUSTER_PORTS; do
+  url="http://127.0.0.1:$port"
+  HEDGEHOG_URL="$url" $CTL create-table users 2>/dev/null || true
+  HEDGEHOG_URL="$url" $CTL create-table products 2>/dev/null || true
+  HEDGEHOG_URL="$url" $CTL create-table orders 2>/dev/null || true
+done
+# Ensure primary has tables (in case CLUSTER_PORTS didn't include BASE_URL's port)
+$CTL create-table users 2>/dev/null || true
+$CTL create-table products 2>/dev/null || true
+$CTL create-table orders 2>/dev/null || true
 
 # Seed users
 echo "Seeding users..."

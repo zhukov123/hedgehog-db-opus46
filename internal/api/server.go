@@ -34,6 +34,7 @@ func NewServer(bindAddr string, tm *table.TableManager) *Server {
 	router.GET("/api/v1/tables", handlers.ListTables)
 	router.DELETE("/api/v1/tables/{name}", handlers.DeleteTable)
 
+	router.GET("/api/v1/tables/{name}/count", handlers.TableCount)
 	router.GET("/api/v1/tables/{name}/items", handlers.ScanItems)
 	router.GET("/api/v1/tables/{name}/items/{key}", handlers.GetItem)
 	router.PUT("/api/v1/tables/{name}/items/{key}", handlers.PutItem)

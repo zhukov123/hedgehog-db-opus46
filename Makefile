@@ -6,6 +6,7 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/hedgehogdb ./cmd/hedgehogdb
 	go build -o $(BUILD_DIR)/hedgehogctl ./cmd/hedgehogctl
+	go build -o $(BUILD_DIR)/trafficgen ./cmd/trafficgen
 	@echo "Built binaries in $(BUILD_DIR)/"
 
 clean:

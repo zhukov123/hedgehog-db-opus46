@@ -30,7 +30,7 @@ Flag defaults: `-bind 0.0.0.0:8080 -data-dir ./data -node-id node-1`
 
 Commands: `create-table`, `list-tables`, `delete-table`, `get`, `put`, `delete`, `scan`, `cluster-status`, `cluster-nodes`
 
-Uses `HEDGEHOG_URL` env var (default `http://localhost:8080`).
+Uses `HEDGEHOG_URL` env var (default `http://localhost:8081`, first cluster node).
 
 ---
 
