@@ -232,6 +232,13 @@ func (r *Replicator) ReplayHintsBatch(nodeID string, n int) {
 				return
 			}
 			drainBody(resp)
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Hint replay to %s failed: status %d", nodeID, resp.StatusCode)
+				metrics.ReplicationHintReplayTotal.WithLabelValues(nodeID, "error").Inc()
+				r.handoff.AddHint(nodeID, h)
+				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
+				return
+			}
 			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "put").Inc()
 
 		case "delete":
@@ -246,6 +253,13 @@ func (r *Replicator) ReplayHintsBatch(nodeID string, n int) {
 				return
 			}
 			drainBody(resp)
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Hint replay to %s failed: status %d", nodeID, resp.StatusCode)
+				metrics.ReplicationHintReplayTotal.WithLabelValues(nodeID, "error").Inc()
+				r.handoff.AddHint(nodeID, h)
+				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
+				return
+			}
 			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "delete").Inc()
 		}
 	}
@@ -299,6 +313,19 @@ func (r *Replicator) ReplicateWrite(tableName, key string, doc map[string]interf
 			continue
 		}
 		drainBody(resp)
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Replicate write to %s failed: status %d", nodeID, resp.StatusCode)
+			metrics.ReplicationSendTotal.WithLabelValues("put", nodeID, "error").Inc()
+			r.handoff.AddHint(nodeID, hint{
+				TableName: tableName,
+				Key:       key,
+				Op:        "put",
+				Doc:       doc,
+				Timestamp: time.Now(),
+			})
+			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
+			continue
+		}
 		metrics.ReplicationSendTotal.WithLabelValues("put", nodeID, "success").Inc()
 	}
 }
@@ -344,6 +371,18 @@ func (r *Replicator) ReplicateDelete(tableName, key string, nodes []string) {
 			continue
 		}
 		drainBody(resp)
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Replicate delete to %s failed: status %d", nodeID, resp.StatusCode)
+			metrics.ReplicationSendTotal.WithLabelValues("delete", nodeID, "error").Inc()
+			r.handoff.AddHint(nodeID, hint{
+				TableName: tableName,
+				Key:       key,
+				Op:        "delete",
+				Timestamp: time.Now(),
+			})
+			metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
+			continue
+		}
 		metrics.ReplicationSendTotal.WithLabelValues("delete", nodeID, "success").Inc()
 	}
 }
@@ -376,6 +415,13 @@ func (r *Replicator) ReplayHints(nodeID string) {
 				return
 			}
 			drainBody(resp)
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Hint replay to %s failed: status %d", nodeID, resp.StatusCode)
+				metrics.ReplicationHintReplayTotal.WithLabelValues(nodeID, "error").Inc()
+				r.handoff.AddHint(nodeID, h)
+				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
+				return
+			}
 			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "put").Inc()
 
 		case "delete":
@@ -390,6 +436,13 @@ func (r *Replicator) ReplayHints(nodeID string) {
 				return
 			}
 			drainBody(resp)
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Hint replay to %s failed: status %d", nodeID, resp.StatusCode)
+				metrics.ReplicationHintReplayTotal.WithLabelValues(nodeID, "error").Inc()
+				r.handoff.AddHint(nodeID, h)
+				metrics.UpdateHintedHandoffGauges(r.handoff.PendingCounts())
+				return
+			}
 			metrics.ReplicationHintReplayOpsTotal.WithLabelValues(nodeID, "delete").Inc()
 		}
 	}

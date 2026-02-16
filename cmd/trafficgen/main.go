@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,13 @@ var (
 	stressStep           float64
 	stressDuration       time.Duration
 	stressErrorThreshold float64
+
+	// Write-stress test flags (separate mode: ramp writes until p95 latency hits limit)
+	writeStressMode      bool
+	writeStressInitial   float64
+	writeStressStep      float64
+	writeStressDuration  time.Duration
+	writeStressP95LimitMs float64
 )
 
 var (
@@ -82,6 +90,8 @@ Example:
   ./bin/trafficgen -urls http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083
   ./bin/trafficgen -stress
   ./bin/trafficgen -stress -stress-step 200 -stress-duration 15s -stress-error-threshold 0.02
+  ./bin/trafficgen -write-stress
+  ./bin/trafficgen -write-stress -write-stress-initial 50 -write-stress-step 25 -write-stress-duration 30s -write-stress-p95-limit 500
 `)
 	}
 	flag.StringVar(&baseURL, "url", getEnv("HEDGEHOG_URL", "http://localhost:8081"), "HedgehogDB base URL (used when -urls is not set; default 8081 = first cluster node)")
@@ -95,6 +105,11 @@ Example:
 	flag.Float64Var(&stressStep, "stress-step", 100, "req/s added each stress step")
 	flag.DurationVar(&stressDuration, "stress-duration", 10*time.Second, "how long to hold each rate before ramping")
 	flag.Float64Var(&stressErrorThreshold, "stress-error-threshold", 0.05, "error percentage that triggers stop (0.05 = 5%)")
+	flag.BoolVar(&writeStressMode, "write-stress", false, "write-stress mode: ramp strong writes until p95 latency hits limit, then report benchmark")
+	flag.Float64Var(&writeStressInitial, "write-stress-initial", 50, "initial write rate (writes/s) for write-stress")
+	flag.Float64Var(&writeStressStep, "write-stress-step", 25, "write rate increment per step (writes/s)")
+	flag.DurationVar(&writeStressDuration, "write-stress-duration", 30*time.Second, "how long to hold each write rate before checking p95")
+	flag.Float64Var(&writeStressP95LimitMs, "write-stress-p95-limit", 500, "stop when p95 latency (ms) for strong writes reaches this; benchmark = previous step rate")
 	flag.Parse()
 
 	if insertsOnly {
@@ -120,6 +135,9 @@ Example:
 	if stressMode {
 		log.Printf("Stress test | base inserts=%.1f/s updates=%.1f/s deletes=%.1f/s reads=%.1f/s", insertsPS, updatesPS, deletesPS, readsPS)
 		log.Printf("Stress test | step=%.0f req/s duration=%v threshold=%.1f%%", stressStep, stressDuration, stressErrorThreshold*100)
+	} else if writeStressMode {
+		log.Printf("Write-stress | strong writes only; initial=%.0f/s step=%.0f/s duration=%v p95-limit=%.0fms",
+			writeStressInitial, writeStressStep, writeStressDuration, writeStressP95LimitMs)
 	} else {
 		log.Printf("Traffic gen | inserts=%.1f/s updates=%.1f/s deletes=%.1f/s reads=%.1f/s", insertsPS, updatesPS, deletesPS, readsPS)
 	}
@@ -171,6 +189,10 @@ Example:
 
 	if stressMode {
 		runStress(pools, &insertCountersMu, insertCounters, sig)
+		return
+	}
+	if writeStressMode {
+		runWriteStress(pools, &insertCountersMu, insertCounters, sig)
 		return
 	}
 
@@ -757,22 +779,33 @@ func drainClose(resp *http.Response) {
 }
 
 func doPut(table, key string, body []byte) (bool, error) {
+	_, ok, err := doPutWithConsistency(table, key, body, "")
+	return ok, err
+}
+
+// doPutWithConsistency performs PUT with optional ?consistency=strong and returns latency, success, and error.
+func doPutWithConsistency(table, key string, body []byte, consistency string) (latency time.Duration, ok bool, err error) {
 	path := "/api/v1/tables/" + table + "/items/" + url.PathEscape(key)
+	if consistency == "strong" {
+		path += "?consistency=strong"
+	}
 	req, err := http.NewRequest("PUT", getBaseURL()+path, bytes.NewReader(body))
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	start := time.Now()
 	resp, err := client.Do(req)
+	latency = time.Since(start)
 	if err != nil {
-		return false, err
+		return latency, false, err
 	}
 	defer drainClose(resp)
 	if resp.StatusCode == http.StatusOK {
-		return true, nil
+		return latency, true, nil
 	}
 	bodyRead, _ := io.ReadAll(resp.Body)
-	return false, fmt.Errorf("%d %s", resp.StatusCode, string(bodyRead))
+	return latency, false, fmt.Errorf("%d %s", resp.StatusCode, string(bodyRead))
 }
 
 func doGet(table, key string) (bool, error) {
@@ -968,5 +1001,196 @@ func printStressResults(results []stressResult) {
 	}
 	fmt.Println("  ─────────────────────────────────────────────")
 	fmt.Printf("  Max sustainable rate: %.0f req/s\n", maxClean)
+	fmt.Println()
+}
+
+// ---------------------------------------------------------------------------
+// Write-stress: ramp strong writes until p95 latency hits limit → benchmark
+// ---------------------------------------------------------------------------
+
+const (
+	latencyBufferMaxSamples = 100_000
+	minSamplesForP95        = 50
+)
+
+type latencyBuffer struct {
+	mu sync.Mutex
+	d  []time.Duration
+}
+
+func (b *latencyBuffer) Add(d time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.d) < latencyBufferMaxSamples {
+		b.d = append(b.d, d)
+	} else {
+		// drop oldest (circular would be better; overwrite for simplicity)
+		b.d = append(b.d[1:], d)
+	}
+}
+
+// P95 returns the 95th percentile latency in milliseconds. Returns 0 if too few samples.
+func (b *latencyBuffer) P95() float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(b.d)
+	if n < minSamplesForP95 {
+		return 0
+	}
+	// copy and sort to compute percentile
+	sorted := make([]time.Duration, n)
+	copy(sorted, b.d)
+	// simple sort (we only need element at 95th percentile index)
+	sortDurations(sorted)
+	idx := int(math.Ceil(0.95*float64(n))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	return float64(sorted[idx].Milliseconds())
+}
+
+func sortDurations(d []time.Duration) {
+	sort.Slice(d, func(i, j int) bool { return d[i] < d[j] })
+}
+
+func (b *latencyBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.d = b.d[:0]
+}
+
+func (b *latencyBuffer) Count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.d)
+}
+
+func runWriteStress(pools map[string]*keyPool, mu *sync.Mutex, counters map[string]int, sig <-chan os.Signal) {
+	var buf latencyBuffer
+	currentRate := writeStressInitial
+	prevRate := currentRate
+	tables := []string{usersTable, productsTable, ordersTable}
+	step := 0
+
+	for {
+		step++
+		buf.Reset()
+		insertCnt.Store(0)
+		errCnt.Store(0)
+
+		log.Printf("Write-stress step %d: %.0f strong writes/s (p95 limit %.0f ms)", step, currentRate, writeStressP95LimitMs)
+
+		stop := make(chan struct{})
+		nw := workerCount(currentRate)
+		jobs, wg := startWorkers(nw)
+		interval := time.Duration(float64(time.Second) / currentRate)
+		ticker := time.NewTicker(interval)
+		idx := 0
+
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					close(jobs)
+					return
+				case <-ticker.C:
+				}
+				table := tables[idx%len(tables)]
+				idx++
+				mu.Lock()
+				counters[table]++
+				keyNum := counters[table]
+				mu.Unlock()
+				tbl, kn := table, keyNum
+				select {
+				case jobs <- func() {
+					var key string
+					var body []byte
+					switch tbl {
+					case usersTable:
+						key = fmt.Sprintf("user-%d", kn)
+						body = mustJSON(map[string]interface{}{
+							"name":  fmt.Sprintf("User %d", kn),
+							"email": fmt.Sprintf("user%d@example.com", kn),
+							"age":   rand.Intn(40) + 20,
+						})
+					case productsTable:
+						key = fmt.Sprintf("prod-%d", kn)
+						body = mustJSON(map[string]interface{}{
+							"name":     productNames[rand.Intn(len(productNames))],
+							"price":    float64(rand.Intn(900)+100) + 0.99,
+							"in_stock": true,
+						})
+					case ordersTable:
+						key = fmt.Sprintf("order-%d", kn)
+						body = mustJSON(map[string]interface{}{
+							"user_id":    fmt.Sprintf("user-%03d", rand.Intn(20)+1),
+							"product_id": fmt.Sprintf("prod-%03d", rand.Intn(10)+1),
+							"quantity":   rand.Intn(5) + 1,
+							"status":     "completed",
+						})
+					}
+					latency, ok, err := doPutWithConsistency(tbl, key, body, "strong")
+					buf.Add(latency)
+					if ok {
+						insertCnt.Add(1)
+						pools[tbl].add(key)
+					} else {
+						errCnt.Add(1)
+						if err != nil {
+							logErr("PUT", tbl, key, err)
+						}
+					}
+				}:
+				default:
+				}
+			}
+		}()
+
+		select {
+		case <-time.After(writeStressDuration):
+		case <-sig:
+			log.Println("Write-stress interrupted")
+			ticker.Stop()
+			close(stop)
+			wg.Wait()
+			printWriteStressBenchmark(prevRate, step-1)
+			return
+		}
+
+		close(stop)
+		wg.Wait()
+
+		n := buf.Count()
+		p95 := buf.P95()
+		writes := insertCnt.Load()
+		errors := errCnt.Load()
+
+		log.Printf("Write-stress step %d done: %.0f writes/s  samples=%d  p95=%.0f ms  ok=%d errors=%d",
+			step, currentRate, n, p95, writes, errors)
+
+		if n < minSamplesForP95 {
+			log.Printf("Write-stress: too few samples (%d), stopping", n)
+			printWriteStressBenchmark(prevRate, step)
+			return
+		}
+
+		if p95 >= writeStressP95LimitMs {
+			log.Printf("Write-stress: p95 %.0f ms >= limit %.0f ms → stopping", p95, writeStressP95LimitMs)
+			printWriteStressBenchmark(prevRate, step)
+			return
+		}
+
+		prevRate = currentRate
+		currentRate += writeStressStep
+	}
+}
+
+func printWriteStressBenchmark(benchmarkRate float64, steps int) {
+	fmt.Println()
+	fmt.Println("Write-stress benchmark (strong writes):")
+	fmt.Printf("  Steps completed: %d\n", steps)
+	fmt.Printf("  Max write rate before p95 exceeded limit: %.0f strong writes/s\n", benchmarkRate)
 	fmt.Println()
 }

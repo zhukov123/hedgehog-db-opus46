@@ -145,7 +145,7 @@ func main() {
 	}
 
 	coordinator := cluster.NewCoordinator(
-		membership, ring, tableManager,
+		membership, ring, cluster.WrapTableManager(tableManager),
 		cfg.ReplicationN, cfg.ReadQuorum, cfg.WriteQuorum,
 	)
 	replicator := cluster.NewReplicator(membership)

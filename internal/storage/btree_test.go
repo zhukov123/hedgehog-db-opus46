@@ -225,6 +225,70 @@ func TestBPlusTree_DeleteMany(t *testing.T) {
 	}
 }
 
+func TestBPlusTree_ScanChunked(t *testing.T) {
+	tree, cleanup := setupTestTree(t)
+	defer cleanup()
+
+	n := 10
+	chunkSize := 2
+	for i := 0; i < n; i++ {
+		k := fmt.Sprintf("key-%03d", i)
+		v := fmt.Sprintf("value-%03d", i)
+		if err := tree.Insert([]byte(k), []byte(v)); err != nil {
+			t.Fatalf("Insert %q: %v", k, err)
+		}
+	}
+
+	var seen []string
+	var lastKey string
+	err := tree.ScanChunked(chunkSize, func(key, value []byte) bool {
+		sk := string(key)
+		seen = append(seen, sk)
+		if lastKey != "" && sk <= lastKey {
+			t.Errorf("ScanChunked out of order: %q after %q", sk, lastKey)
+		}
+		lastKey = sk
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ScanChunked: %v", err)
+	}
+	if len(seen) != n {
+		t.Fatalf("ScanChunked saw %d items, want %d", len(seen), n)
+	}
+	for i := 0; i < n; i++ {
+		expected := fmt.Sprintf("key-%03d", i)
+		if seen[i] != expected {
+			t.Fatalf("ScanChunked[%d]: got %q, want %q", i, seen[i], expected)
+		}
+	}
+}
+
+func TestBPlusTree_ScanChunked_ConcurrentSearch(t *testing.T) {
+	tree, cleanup := setupTestTree(t)
+	defer cleanup()
+
+	for i := 0; i < 20; i++ {
+		k := fmt.Sprintf("key-%03d", i)
+		tree.Insert([]byte(k), []byte("v"))
+	}
+
+	done := make(chan bool)
+	go func() {
+		_ = tree.ScanChunked(2, func(key, value []byte) bool {
+			return true
+		})
+		done <- true
+	}()
+	for i := 0; i < 20; i++ {
+		k := fmt.Sprintf("key-%03d", i)
+		if _, err := tree.Search([]byte(k)); err != nil {
+			t.Errorf("Search %q during ScanChunked: %v", k, err)
+		}
+	}
+	<-done
+}
+
 func TestBPlusTree_SplitAndMerge(t *testing.T) {
 	tree, cleanup := setupTestTree(t)
 	defer cleanup()

@@ -21,6 +21,36 @@ import (
 
 var coordTracer = otel.Tracer("hedgehogdb.coordinator")
 
+// ItemTable is the subset of table operations the coordinator needs (for testing with mocks).
+type ItemTable interface {
+	PutItem(key string, doc map[string]interface{}) error
+	GetItem(key string) (map[string]interface{}, error)
+	DeleteItem(key string) error
+}
+
+// TableManagerForCoordinator is the subset of table manager the coordinator needs.
+// *table.TableManager and *table.Table satisfy this for production use.
+type TableManagerForCoordinator interface {
+	GetTable(name string) (ItemTable, error)
+}
+
+// tableManagerAdapter adapts *table.TableManager to TableManagerForCoordinator.
+type tableManagerAdapter struct {
+	tm *table.TableManager
+}
+
+// WrapTableManager adapts *table.TableManager to TableManagerForCoordinator for use with NewCoordinator.
+func WrapTableManager(tm *table.TableManager) TableManagerForCoordinator {
+	if tm == nil {
+		return nil
+	}
+	return &tableManagerAdapter{tm: tm}
+}
+
+func (a *tableManagerAdapter) GetTable(name string) (ItemTable, error) {
+	return a.tm.GetTable(name)
+}
+
 // drainClose fully reads and closes a response body so the TCP connection
 // can be returned to the pool for reuse.
 func drainClose(resp *http.Response) {
@@ -34,7 +64,7 @@ func drainClose(resp *http.Response) {
 type Coordinator struct {
 	membership   *Membership
 	ring         *Ring
-	tableManager *table.TableManager
+	tableManager TableManagerForCoordinator
 	replicator   *Replicator
 	readQuorum   int
 	writeQuorum  int
@@ -43,7 +73,7 @@ type Coordinator struct {
 }
 
 // NewCoordinator creates a request coordinator.
-func NewCoordinator(membership *Membership, ring *Ring, tm *table.TableManager, replN, readQ, writeQ int) *Coordinator {
+func NewCoordinator(membership *Membership, ring *Ring, tm TableManagerForCoordinator, replN, readQ, writeQ int) *Coordinator {
 	return &Coordinator{
 		membership:   membership,
 		ring:         ring,

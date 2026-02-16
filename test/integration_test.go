@@ -222,6 +222,70 @@ func TestAPI_Health(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestAPI_ConsistencyParam verifies GET/PUT accept ?consistency=strong and ?consistency=eventual (nil coordinator: both behave same).
+func TestAPI_ConsistencyParam(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	doPost(t, ts, "/api/v1/tables", map[string]string{"name": "t1"}).Body.Close()
+	doPut(t, ts, "/api/v1/tables/t1/items/k1", map[string]interface{}{"x": 1}).Body.Close()
+
+	// GET with consistency=strong
+	resp := doGet(t, ts, "/api/v1/tables/t1/items/k1?consistency=strong")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET ?consistency=strong: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// GET with consistency=eventual
+	resp = doGet(t, ts, "/api/v1/tables/t1/items/k1?consistency=eventual")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET ?consistency=eventual: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// PUT with consistency=strong
+	resp = doPut(t, ts, "/api/v1/tables/t1/items/k2?consistency=strong", map[string]interface{}{"y": 2})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT ?consistency=strong: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// PUT with consistency=eventual
+	resp = doPut(t, ts, "/api/v1/tables/t1/items/k3?consistency=eventual", map[string]interface{}{"z": 3})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT ?consistency=eventual: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestAPI_GetItem_404_MissingKey verifies GET for non-existent key returns 404.
+func TestAPI_GetItem_404_MissingKey(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	doPost(t, ts, "/api/v1/tables", map[string]string{"name": "t1"}).Body.Close()
+
+	resp := doGet(t, ts, "/api/v1/tables/t1/items/nonexistent")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET missing key: status %d, want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestAPI_CreateTable_409_Duplicate verifies creating duplicate table returns 409.
+func TestAPI_CreateTable_409_Duplicate(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	doPost(t, ts, "/api/v1/tables", map[string]string{"name": "t1"}).Body.Close()
+	resp := doPost(t, ts, "/api/v1/tables", map[string]string{"name": "t1"})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("Create duplicate table: status %d, want 409", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 // HTTP helpers
 
 func doGet(t *testing.T, ts *httptest.Server, path string) *http.Response {
