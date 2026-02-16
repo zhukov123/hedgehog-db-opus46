@@ -128,17 +128,11 @@ func (t *BPlusTree) Insert(key, value []byte) error {
 }
 
 func (t *BPlusTree) insertInternal(key, value []byte) error {
-	// Find the leaf page
-	path, err := t.findLeafPath(key)
+	path, leaf, leafID, err := t.findLeafPathWithLeaf(key)
 	if err != nil {
 		return err
 	}
-
-	leafID := path[len(path)-1]
-	leaf, err := t.pool.FetchPage(leafID)
-	if err != nil {
-		return fmt.Errorf("insert fetch leaf %d: %w", leafID, err)
-	}
+	defer t.pool.Unpin(leafID)
 
 	// Check if key already exists -> update
 	if idx := leaf.leafSearchIndex(key); idx < int(leaf.CellCount()) {
@@ -153,18 +147,15 @@ func (t *BPlusTree) insertInternal(key, value []byte) error {
 	// Try to insert
 	err = leaf.InsertLeafCell(key, value)
 	if err == nil {
-		t.pool.Unpin(leafID)
 		return t.flushPage(leafID)
 	}
 
 	if err != ErrPageFull {
-		t.pool.Unpin(leafID)
 		return err
 	}
 
-	// Need to split
-	t.pool.Unpin(leafID)
-	return t.splitAndInsert(path, key, value)
+	// Need to split (pass leaf so we don't re-fetch)
+	return t.splitAndInsertWithLeaf(path, key, value, leaf, leafID)
 }
 
 // Delete removes a key from the tree.
@@ -192,23 +183,16 @@ func (t *BPlusTree) Delete(key []byte) error {
 }
 
 func (t *BPlusTree) deleteInternal(key []byte) error {
-	path, err := t.findLeafPath(key)
+	path, leaf, leafID, err := t.findLeafPathWithLeaf(key)
 	if err != nil {
 		return err
 	}
-
-	leafID := path[len(path)-1]
-	leaf, err := t.pool.FetchPage(leafID)
-	if err != nil {
-		return err
-	}
+	defer t.pool.Unpin(leafID)
 
 	if !leaf.DeleteLeafCell(key) {
-		t.pool.Unpin(leafID)
 		return ErrKeyNotFound
 	}
 
-	t.pool.Unpin(leafID)
 	if err := t.flushPage(leafID); err != nil {
 		return err
 	}
@@ -219,19 +203,29 @@ func (t *BPlusTree) deleteInternal(key []byte) error {
 
 // findLeafPath traverses from root to the target leaf, returning the path of page IDs.
 func (t *BPlusTree) findLeafPath(key []byte) ([]uint32, error) {
-	path := make([]uint32, 0, 8)
+	path, _, leafID, err := t.findLeafPathWithLeaf(key)
+	if err != nil {
+		return nil, err
+	}
+	t.pool.Unpin(leafID)
+	return path, nil
+}
+
+// findLeafPathWithLeaf returns the path, the leaf page (pinned), and its ID.
+// Caller must call pool.Unpin(leafID) when done with the leaf.
+func (t *BPlusTree) findLeafPathWithLeaf(key []byte) (path []uint32, leaf *Page, leafID uint32, err error) {
+	path = make([]uint32, 0, 8)
 	pageID := t.rootPageID
 
 	for {
 		path = append(path, pageID)
-		page, err := t.pool.FetchPage(pageID)
-		if err != nil {
-			return nil, fmt.Errorf("findLeafPath fetch %d: %w", pageID, err)
+		page, fetchErr := t.pool.FetchPage(pageID)
+		if fetchErr != nil {
+			return nil, nil, 0, fmt.Errorf("findLeafPath fetch %d: %w", pageID, fetchErr)
 		}
 
 		if page.PageType() == PageTypeLeaf {
-			t.pool.Unpin(pageID)
-			return path, nil
+			return path, page, pageID, nil
 		}
 
 		childID := page.FindChild(key)
@@ -241,14 +235,19 @@ func (t *BPlusTree) findLeafPath(key []byte) ([]uint32, error) {
 }
 
 // splitAndInsert handles leaf splitting and key promotion.
+// It is called from insertInternal when the leaf is full; the leaf is already pinned.
 func (t *BPlusTree) splitAndInsert(path []uint32, key, value []byte) error {
 	leafID := path[len(path)-1]
-
 	leaf, err := t.pool.FetchPage(leafID)
 	if err != nil {
 		return err
 	}
+	defer t.pool.Unpin(leafID)
+	return t.splitAndInsertWithLeaf(path, key, value, leaf, leafID)
+}
 
+// splitAndInsertWithLeaf does the split using the already-pinned leaf (avoids re-fetch).
+func (t *BPlusTree) splitAndInsertWithLeaf(path []uint32, key, value []byte, leaf *Page, leafID uint32) error {
 	// Collect all key-value pairs from the leaf plus the new one
 	count := int(leaf.CellCount())
 	type kv struct {
@@ -274,7 +273,6 @@ func (t *BPlusTree) splitAndInsert(path []uint32, key, value []byte) error {
 	// Create new right leaf
 	rightLeaf, err := t.pool.NewPage(PageTypeLeaf)
 	if err != nil {
-		t.pool.Unpin(leafID)
 		return err
 	}
 
@@ -282,7 +280,6 @@ func (t *BPlusTree) splitAndInsert(path []uint32, key, value []byte) error {
 	t.clearPageCells(leaf)
 	for _, p := range pairs[:mid] {
 		if err := leaf.InsertLeafCell(p.key, p.value); err != nil {
-			t.pool.Unpin(leafID)
 			t.pool.Unpin(rightLeaf.ID)
 			return fmt.Errorf("rewrite left leaf: %w", err)
 		}
@@ -291,7 +288,6 @@ func (t *BPlusTree) splitAndInsert(path []uint32, key, value []byte) error {
 	// Write right leaf
 	for _, p := range pairs[mid:] {
 		if err := rightLeaf.InsertLeafCell(p.key, p.value); err != nil {
-			t.pool.Unpin(leafID)
 			t.pool.Unpin(rightLeaf.ID)
 			return fmt.Errorf("write right leaf: %w", err)
 		}
@@ -305,8 +301,8 @@ func (t *BPlusTree) splitAndInsert(path []uint32, key, value []byte) error {
 	promotedKey := make([]byte, len(pairs[mid].key))
 	copy(promotedKey, pairs[mid].key)
 
-	t.pool.Unpin(leafID)
 	t.pool.Unpin(rightLeaf.ID)
+	// leafID is unpinned by caller (insertInternal defer)
 
 	if err := t.flushPage(leafID); err != nil {
 		return err

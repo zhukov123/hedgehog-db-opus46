@@ -1,2 +1,5 @@
 # Data files (cluster node data, db files)
 data/
+
+# Binaries
+bin/

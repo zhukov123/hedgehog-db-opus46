@@ -21,6 +21,11 @@ const (
 	// batch of WAL commits.  A smaller window reduces latency but increases
 	// the number of fsyncs; a larger window batches more commits per fsync.
 	DefaultGroupCommitWindow = 2 * time.Millisecond
+
+	// immediateCommitWindow: when only one commit is pending, wait at most this
+	// before syncing instead of the full DefaultGroupCommitWindow (avoids 2ms
+	// latency for single-writer case).
+	immediateCommitWindow = 50 * time.Microsecond
 )
 
 // WALRecord represents a single write-ahead log record.
@@ -191,12 +196,30 @@ func (w *WAL) groupCommitLoop() {
 		case req := <-w.commitCh:
 			pending = append(pending, req)
 		case <-w.commitStop:
-			// Drain any remaining requests.
 			w.drainPending()
 			return
 		}
 
-		// Phase 2: gather more commits for the duration of the window.
+		// Phase 2a: if only one writer is pending, wait a short time; if no
+		// second request arrives, sync immediately (avoid 2ms wait for nothing).
+		quick := time.NewTimer(immediateCommitWindow)
+		select {
+		case <-w.commitStop:
+			quick.Stop()
+			w.drainPending()
+			return
+		case req := <-w.commitCh:
+			quick.Stop()
+			pending = append(pending, req)
+			// Fall through to full-window gather.
+		case <-quick.C:
+			// No second request arrived; sync the single commit immediately.
+			err := w.file.Sync()
+			pending[0].done <- err
+			continue
+		}
+
+		// Phase 2b: gather more commits for the duration of the window.
 		timer := time.NewTimer(w.commitWindow)
 	gather:
 		for {
@@ -217,7 +240,6 @@ func (w *WAL) groupCommitLoop() {
 			req.done <- err
 		}
 
-		// Check if we should exit.
 		select {
 		case <-w.commitStop:
 			w.drainPending()

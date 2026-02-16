@@ -9,6 +9,48 @@
 - **Read p50 latency**: stable at 11-14ms throughout
 - **Error rate**: zero 5xx errors under stress up to 16,800 req/s requested
 
+## Baseline: write-stress (p95 ≤ 300 ms)
+
+Measured before any write-performance changes. Use this to validate improvements.
+
+**Command:**
+```bash
+./bin/trafficgen -write-stress -write-stress-p95-limit 300 \
+  -write-stress-initial 50 -write-stress-step 25 -write-stress-duration 20s \
+  -urls "http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083"
+```
+
+**Single-run result (16 Feb 2026):**
+- **Max write rate before p95 exceeded 300 ms:** **225 strong writes/s** (cluster, 3 nodes round-robin)
+- At 250 writes/s, p95 = 370 ms (stopped); at 225 writes/s, p95 = 288 ms (last passing step)
+- Errors: 0 (when using only the 3 cluster nodes; avoid including a down node in `-urls` or cluster discovery will send ~25% of traffic to it)
+
+**Repeated runs (same day, 3 runs):**
+| Run | Max rate (p95 ≤ 300 ms) | Stopped at (p95) | Note |
+|-----|-------------------------|------------------|------|
+| 1   | **700** writes/s        | 725/s → p95 328 ms | Smaller trees (~150k keys/table) |
+| 2   | **100** writes/s       | 125/s → p95 377 ms | Right after run 1; trees large, high contention |
+| 3   | **675** writes/s       | 700/s → p95 308 ms | Similar to run 1 |
+- **Conclusion:** Numbers vary a lot with tree size and recent load. Use **~100–225 writes/s** as a conservative baseline for “large tree” conditions; **~675–700 writes/s** when trees are smaller. For before/after comparison, run multiple times or fix tree size (e.g. fresh data dir or same key count).
+
+**Double-check in Grafana:** Start the observability stack (`./scripts/start-observability.sh`), then open **http://localhost:3001/d/hedgehogdb-overview**. During or after write-stress: **Request rate** = `sum(rate(hedgehog_http_requests_total[1m])) by (operation)` (look for `put`); **Latency p95** = `histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket[1m])) by (le))` (in seconds; multiply by 1000 for ms). Prometheus: http://localhost:9090.
+
+Re-run the same trafficgen command after changes to compare.
+
+## After Option 1 (16 Feb 2026)
+
+**Implemented:**
+- **Immediate commit:** WAL group-commit loop waits only 50µs when a single commit is pending; if no second request arrives, sync immediately instead of 2ms. Reduces latency for the single-writer case.
+- **Avoid double leaf fetch:** `findLeafPathWithLeaf` returns the leaf page; insert/delete and split use it instead of calling `FetchPage(leafID)` again after `findLeafPath`.
+
+**Write-stress (3 rounds, same command as baseline):**
+| Round | Max rate (p95 ≤ 300 ms) | Stopped at (p95) |
+|-------|-------------------------|------------------|
+| 1     | **725** writes/s        | 750/s → p95 319 ms |
+| 2     | **700** writes/s        | 725/s → p95 exceeded |
+| 3     | (run in progress when captured) | — |
+- **Conclusion:** Option 1 keeps throughput in the **700–725 writes/s** range (similar to pre–Option 1 best runs). The main gain is lower latency when only one writer is active (no 2ms group-commit wait) and one fewer `FetchPage` per insert on the hot path.
+
 ## Bottleneck
 
 Every write acquires an exclusive lock on the B+ tree (`tree.mu.Lock()` in `btree.go`). Only one write can be inside the tree at a time per table. The critical path under the lock:
@@ -21,11 +63,12 @@ As the tree grows deeper and splits more often, each write holds the lock longer
 
 ## Options (ordered by effort)
 
-### 1. Optimize the critical path (easy, ~2-3x)
+### 1. Optimize the critical path (easy, ~2-3x) — *partially done*
 
+- ~~Add "immediate commit" to group commit when only one writer is pending~~ → done (50µs window, then sync)
+- ~~Avoid re-fetching leaf after `findLeafPath`~~ → done (`findLeafPathWithLeaf`, reuse in insert/delete/split)
 - Profile the insert path to find allocations and hot spots
-- Optimize `findLeafPath` to reduce repeated `FetchPage` overhead
-- Add "immediate commit" to group commit when only one writer is pending (avoid the 2ms wait for nothing)
+- Optimize `findLeafPath` to reduce repeated `FetchPage` overhead (e.g. path prealloc)
 - Pre-allocate page buffers to reduce GC pressure
 - Consider caching the root-to-leaf path for sequential inserts
 
