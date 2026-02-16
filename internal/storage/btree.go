@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 )
 
@@ -9,8 +10,35 @@ import (
 type BPlusTree struct {
 	pool       *BufferPool
 	pager      *Pager
+	wal        *WAL   // optional write-ahead log
 	rootPageID uint32
+	activeTxID uint64 // set during write operations while mu is held
 	mu         sync.RWMutex
+}
+
+// SetWAL attaches a WAL to the tree so that Insert/Delete are crash-safe.
+func (t *BPlusTree) SetWAL(w *WAL) {
+	t.wal = w
+}
+
+// flushPage logs a page write to the WAL (if set) and flushes to disk.
+// When WAL is active, the synchronous disk flush is skipped – the page stays
+// dirty in the buffer pool and will be written by the background flush loop.
+// Crash safety is provided by the WAL commit that follows.
+func (t *BPlusTree) flushPage(pageID uint32) error {
+	if t.wal != nil && t.activeTxID > 0 {
+		data, ok := t.pool.GetCachedPageData(pageID)
+		if ok {
+			if _, err := t.wal.LogPageWrite(t.activeTxID, pageID, data); err != nil {
+				return fmt.Errorf("WAL log page %d: %w", pageID, err)
+			}
+		}
+		// With WAL, leave the page dirty for the background flush loop.
+		t.pool.MarkDirty(pageID)
+		return nil
+	}
+	// No WAL — synchronous flush (legacy path).
+	return t.pool.FlushPage(pageID)
 }
 
 // OpenBPlusTree opens or creates a B+ tree. If rootPageID is 0, a new root leaf is created.
@@ -80,6 +108,26 @@ func (t *BPlusTree) Insert(key, value []byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Begin WAL transaction
+	if t.wal != nil {
+		t.activeTxID = t.wal.BeginTx()
+		defer func() { t.activeTxID = 0 }()
+	}
+
+	if err := t.insertInternal(key, value); err != nil {
+		return err
+	}
+
+	// Commit WAL transaction
+	if t.wal != nil {
+		if _, err := t.wal.LogCommit(t.activeTxID); err != nil {
+			return fmt.Errorf("WAL commit: %w", err)
+		}
+	}
+	return nil
+}
+
+func (t *BPlusTree) insertInternal(key, value []byte) error {
 	// Find the leaf page
 	path, err := t.findLeafPath(key)
 	if err != nil {
@@ -106,7 +154,7 @@ func (t *BPlusTree) Insert(key, value []byte) error {
 	err = leaf.InsertLeafCell(key, value)
 	if err == nil {
 		t.pool.Unpin(leafID)
-		return t.pool.FlushPage(leafID)
+		return t.flushPage(leafID)
 	}
 
 	if err != ErrPageFull {
@@ -124,6 +172,26 @@ func (t *BPlusTree) Delete(key []byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Begin WAL transaction
+	if t.wal != nil {
+		t.activeTxID = t.wal.BeginTx()
+		defer func() { t.activeTxID = 0 }()
+	}
+
+	if err := t.deleteInternal(key); err != nil {
+		return err
+	}
+
+	// Commit WAL transaction
+	if t.wal != nil {
+		if _, err := t.wal.LogCommit(t.activeTxID); err != nil {
+			return fmt.Errorf("WAL commit: %w", err)
+		}
+	}
+	return nil
+}
+
+func (t *BPlusTree) deleteInternal(key []byte) error {
 	path, err := t.findLeafPath(key)
 	if err != nil {
 		return err
@@ -141,7 +209,7 @@ func (t *BPlusTree) Delete(key []byte) error {
 	}
 
 	t.pool.Unpin(leafID)
-	if err := t.pool.FlushPage(leafID); err != nil {
+	if err := t.flushPage(leafID); err != nil {
 		return err
 	}
 
@@ -240,10 +308,10 @@ func (t *BPlusTree) splitAndInsert(path []uint32, key, value []byte) error {
 	t.pool.Unpin(leafID)
 	t.pool.Unpin(rightLeaf.ID)
 
-	if err := t.pool.FlushPage(leafID); err != nil {
+	if err := t.flushPage(leafID); err != nil {
 		return err
 	}
-	if err := t.pool.FlushPage(rightLeaf.ID); err != nil {
+	if err := t.flushPage(rightLeaf.ID); err != nil {
 		return err
 	}
 
@@ -271,7 +339,7 @@ func (t *BPlusTree) insertIntoParent(parentPath []uint32, leftChildID uint32, ke
 		// After insertion, find where our key ended up and fix pointers
 		t.fixInternalPointers(parent, key, leftChildID, rightChildID)
 		t.pool.Unpin(parentID)
-		return t.pool.FlushPage(parentID)
+		return t.flushPage(parentID)
 	}
 
 	if err != ErrPageFull {
@@ -391,10 +459,10 @@ func (t *BPlusTree) splitInternalNode(path []uint32, leftChildID uint32, newKey 
 	t.pool.Unpin(nodeID)
 	t.pool.Unpin(rightNode.ID)
 
-	if err := t.pool.FlushPage(nodeID); err != nil {
+	if err := t.flushPage(nodeID); err != nil {
 		return err
 	}
-	if err := t.pool.FlushPage(rightNode.ID); err != nil {
+	if err := t.flushPage(rightNode.ID); err != nil {
 		return err
 	}
 
@@ -418,7 +486,7 @@ func (t *BPlusTree) createNewRoot(leftChildID uint32, key []byte, rightChildID u
 	t.rootPageID = root.ID
 	t.pool.Unpin(root.ID)
 
-	if err := t.pool.FlushPage(root.ID); err != nil {
+	if err := t.flushPage(root.ID); err != nil {
 		return err
 	}
 	return t.pager.SetRootPageID(root.ID)
@@ -509,7 +577,7 @@ func (t *BPlusTree) handleUnderflow(path []uint32) error {
 	}
 
 	t.pool.Unpin(parentID)
-	if err := t.pool.FlushPage(parentID); err != nil {
+	if err := t.flushPage(parentID); err != nil {
 		return err
 	}
 
@@ -612,6 +680,123 @@ func (t *BPlusTree) Scan(fn func(key, value []byte) bool) error {
 		pageID = nextID
 	}
 	return nil
+}
+
+// ScanChunked iterates over all key-value pairs in sorted order, but
+// releases and re-acquires the read lock every chunkSize entries. This
+// prevents long lock holds that would block concurrent writers (e.g.
+// during anti-entropy full-table scans).
+//
+// Between chunks the goroutine yields so pending writers can proceed.
+// Position is tracked by remembering the last key; after re-acquiring
+// the lock we re-find the leaf via findLeafPath and skip forward.
+func (t *BPlusTree) ScanChunked(chunkSize int, fn func(key, value []byte) bool) error {
+	if chunkSize <= 0 {
+		chunkSize = 500
+	}
+
+	var lastKey []byte // nil on the first chunk
+
+	for {
+		done, err := t.scanOneChunk(chunkSize, lastKey, func(k, v []byte) bool {
+			lastKey = make([]byte, len(k))
+			copy(lastKey, k)
+			return fn(k, v)
+		})
+		if err != nil || done {
+			return err
+		}
+		// Yield so writers blocked on mu.Lock() can make progress.
+		runtime.Gosched()
+	}
+}
+
+// scanOneChunk scans up to chunkSize entries starting after afterKey
+// (or from the beginning if afterKey is nil). It holds RLock for the
+// duration of the chunk only. Returns done=true when the scan is
+// complete or the callback returned false.
+func (t *BPlusTree) scanOneChunk(chunkSize int, afterKey []byte, fn func(key, value []byte) bool) (done bool, err error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// Find the starting leaf page.
+	var pageID uint32
+	var startIdx int
+
+	if afterKey == nil {
+		// First chunk: find the leftmost leaf.
+		pageID = t.rootPageID
+		for {
+			page, err := t.pool.FetchPage(pageID)
+			if err != nil {
+				return false, err
+			}
+			if page.PageType() == PageTypeLeaf {
+				t.pool.Unpin(pageID)
+				break
+			}
+			if page.CellCount() > 0 {
+				childID, _ := page.GetInternalCellAt(0)
+				t.pool.Unpin(pageID)
+				pageID = childID
+			} else {
+				childID := page.RightPointer()
+				t.pool.Unpin(pageID)
+				pageID = childID
+			}
+		}
+		startIdx = 0
+	} else {
+		// Resume: find the leaf that would contain afterKey.
+		path, err := t.findLeafPath(afterKey)
+		if err != nil {
+			return false, err
+		}
+		pageID = path[len(path)-1]
+
+		// Find the index just past afterKey in this leaf.
+		page, err := t.pool.FetchPage(pageID)
+		if err != nil {
+			return false, err
+		}
+		count := int(page.CellCount())
+		startIdx = count // default: skip to next leaf
+		for i := 0; i < count; i++ {
+			k, _ := page.GetLeafKeyValueAt(i)
+			if compareKeys(k, afterKey) > 0 {
+				startIdx = i
+				break
+			}
+		}
+		t.pool.Unpin(pageID)
+	}
+
+	// Walk the leaf chain for up to chunkSize entries.
+	emitted := 0
+	for pageID != 0 {
+		page, err := t.pool.FetchPage(pageID)
+		if err != nil {
+			return false, err
+		}
+		count := int(page.CellCount())
+		for i := startIdx; i < count; i++ {
+			k, v := page.GetLeafKeyValueAt(i)
+			if !fn(k, v) {
+				t.pool.Unpin(pageID)
+				return true, nil
+			}
+			emitted++
+			if emitted >= chunkSize {
+				t.pool.Unpin(pageID)
+				return false, nil // more data remains
+			}
+		}
+		nextID := page.RightPointer()
+		t.pool.Unpin(pageID)
+		pageID = nextID
+		startIdx = 0
+	}
+	return true, nil // reached end of data
 }
 
 // Count returns the number of key-value pairs in the tree.

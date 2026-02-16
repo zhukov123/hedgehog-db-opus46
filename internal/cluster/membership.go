@@ -55,6 +55,8 @@ type Membership struct {
 	failureTimeout    time.Duration
 	stopCh            chan struct{}
 	client            *http.Client
+
+	onRecovery func(nodeID string) // called when a node transitions to Alive from Dead/Suspect
 }
 
 // NewMembership creates a membership manager.
@@ -82,6 +84,12 @@ func NewMembership(selfID, selfAddr string, ring *Ring, heartbeatInterval, failu
 	ring.AddNode(selfID)
 
 	return m
+}
+
+// SetRecoveryCallback registers a function to be called (in a new goroutine)
+// when a node transitions from Dead or Suspect back to Alive.
+func (m *Membership) SetRecoveryCallback(fn func(nodeID string)) {
+	m.onRecovery = fn
 }
 
 // Start begins the heartbeat loop.
@@ -161,9 +169,18 @@ func (m *Membership) HandleHeartbeat(fromID, fromAddr string) {
 		return
 	}
 
+	oldStatus := node.Status
 	node.Status = NodeAlive
 	node.LastSeen = time.Now()
 	node.Addr = fromAddr
+
+	if (oldStatus == NodeSuspect || oldStatus == NodeDead) && m.onRecovery != nil {
+		log.Printf("Node %s recovered (was %s), triggering hint replay", fromID, oldStatus)
+		if oldStatus == NodeDead {
+			m.ring.AddNode(fromID)
+		}
+		go m.onRecovery(fromID)
+	}
 }
 
 // GetAliveNodes returns all alive nodes.

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 )
 
 const (
@@ -15,6 +16,11 @@ const (
 	WALRecordPageWrite  uint8 = 0x01
 	WALRecordCommit     uint8 = 0x02
 	WALRecordCheckpoint uint8 = 0x03
+
+	// DefaultGroupCommitWindow is the maximum time to wait before flushing a
+	// batch of WAL commits.  A smaller window reduces latency but increases
+	// the number of fsyncs; a larger window batches more commits per fsync.
+	DefaultGroupCommitWindow = 2 * time.Millisecond
 )
 
 // WALRecord represents a single write-ahead log record.
@@ -88,13 +94,24 @@ func DeserializeWALRecord(reader io.Reader) (*WALRecord, error) {
 	return r, nil
 }
 
-// WAL manages the write-ahead log.
+// commitRequest is sent by LogCommit to the group commit loop.
+type commitRequest struct {
+	done chan error // closed (with optional error) when the batch is synced
+}
+
+// WAL manages the write-ahead log with optional group commit.
 type WAL struct {
-	file    *os.File
-	path    string
-	nextLSN uint64
+	file     *os.File
+	path     string
+	nextLSN  uint64
 	nextTxID uint64
-	mu      sync.Mutex
+	mu       sync.Mutex
+
+	// Group commit (nil when disabled — falls back to sync-per-commit)
+	commitCh     chan commitRequest
+	commitWindow time.Duration
+	commitStop   chan struct{}
+	commitDone   chan struct{}
 }
 
 // OpenWAL opens or creates a WAL file.
@@ -137,6 +154,97 @@ func (w *WAL) scanExisting() error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Group commit lifecycle
+// ---------------------------------------------------------------------------
+
+// EnableGroupCommit starts the background group-commit goroutine.
+// Commits are batched for up to `window` before a single Sync() is issued.
+func (w *WAL) EnableGroupCommit(window time.Duration) {
+	if window <= 0 {
+		window = DefaultGroupCommitWindow
+	}
+	w.commitWindow = window
+	w.commitCh = make(chan commitRequest, 4096)
+	w.commitStop = make(chan struct{})
+	w.commitDone = make(chan struct{})
+	go w.groupCommitLoop()
+}
+
+// DisableGroupCommit stops the group-commit goroutine and drains pending commits.
+func (w *WAL) DisableGroupCommit() {
+	if w.commitCh == nil {
+		return
+	}
+	close(w.commitStop)
+	<-w.commitDone
+	w.commitCh = nil
+}
+
+func (w *WAL) groupCommitLoop() {
+	defer close(w.commitDone)
+
+	for {
+		// Phase 1: wait for the first commit request (or shutdown).
+		var pending []commitRequest
+		select {
+		case req := <-w.commitCh:
+			pending = append(pending, req)
+		case <-w.commitStop:
+			// Drain any remaining requests.
+			w.drainPending()
+			return
+		}
+
+		// Phase 2: gather more commits for the duration of the window.
+		timer := time.NewTimer(w.commitWindow)
+	gather:
+		for {
+			select {
+			case req := <-w.commitCh:
+				pending = append(pending, req)
+			case <-timer.C:
+				break gather
+			case <-w.commitStop:
+				timer.Stop()
+				break gather
+			}
+		}
+
+		// Phase 3: single Sync for the whole batch.
+		err := w.file.Sync()
+		for _, req := range pending {
+			req.done <- err
+		}
+
+		// Check if we should exit.
+		select {
+		case <-w.commitStop:
+			w.drainPending()
+			return
+		default:
+		}
+	}
+}
+
+// drainPending syncs and notifies any remaining in-flight commit requests.
+func (w *WAL) drainPending() {
+	// Sync once for all remaining records.
+	err := w.file.Sync()
+	for {
+		select {
+		case req := <-w.commitCh:
+			req.done <- err
+		default:
+			return
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core WAL operations
+// ---------------------------------------------------------------------------
+
 // BeginTx returns a new transaction ID.
 func (w *WAL) BeginTx() uint64 {
 	w.mu.Lock()
@@ -147,6 +255,7 @@ func (w *WAL) BeginTx() uint64 {
 }
 
 // LogPageWrite logs a page write (after-image).
+// The write is buffered in the OS page cache; durability is ensured by LogCommit's Sync.
 func (w *WAL) LogPageWrite(txID uint64, pageID uint32, data []byte) (uint64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -164,17 +273,16 @@ func (w *WAL) LogPageWrite(txID uint64, pageID uint32, data []byte) (uint64, err
 	if _, err := w.file.Write(buf); err != nil {
 		return 0, fmt.Errorf("WAL write: %w", err)
 	}
-	if err := w.file.Sync(); err != nil {
-		return 0, fmt.Errorf("WAL sync: %w", err)
-	}
+	// No Sync here — commit will sync all pending records.
 
 	return record.LSN, nil
 }
 
-// LogCommit logs a transaction commit.
+// LogCommit logs a transaction commit and ensures durability.
+// When group commit is enabled, the caller blocks until the batch containing
+// this commit record has been fsync'd (amortising the cost across many txns).
 func (w *WAL) LogCommit(txID uint64) (uint64, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	record := &WALRecord{
 		LSN:  w.nextLSN,
@@ -185,16 +293,30 @@ func (w *WAL) LogCommit(txID uint64) (uint64, error) {
 
 	buf := record.Serialize()
 	if _, err := w.file.Write(buf); err != nil {
+		w.mu.Unlock()
 		return 0, fmt.Errorf("WAL commit write: %w", err)
 	}
+	lsn := record.LSN
+	w.mu.Unlock()
+
+	// Group commit path: submit to the batch loop and wait.
+	if w.commitCh != nil {
+		req := commitRequest{done: make(chan error, 1)}
+		w.commitCh <- req
+		if err := <-req.done; err != nil {
+			return 0, fmt.Errorf("WAL commit sync: %w", err)
+		}
+		return lsn, nil
+	}
+
+	// Fallback: synchronous sync (group commit not enabled).
 	if err := w.file.Sync(); err != nil {
 		return 0, fmt.Errorf("WAL commit sync: %w", err)
 	}
-
-	return record.LSN, nil
+	return lsn, nil
 }
 
-// LogCheckpoint logs a checkpoint.
+// LogCheckpoint logs a checkpoint (always synchronous).
 func (w *WAL) LogCheckpoint() (uint64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -287,8 +409,9 @@ func (w *WAL) Truncate() error {
 	return err
 }
 
-// Close closes the WAL file.
+// Close stops group commit (if running), syncs, and closes the WAL file.
 func (w *WAL) Close() error {
+	w.DisableGroupCommit()
 	return w.file.Close()
 }
 

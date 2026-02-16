@@ -151,6 +151,11 @@ func main() {
 	replicator := cluster.NewReplicator(membership)
 	coordinator.SetReplicator(replicator)
 
+	// When a node recovers from Dead/Suspect, immediately replay pending hints.
+	membership.SetRecoveryCallback(func(nodeID string) {
+		replicator.ReplayHints(nodeID)
+	})
+
 	antiEntropy := cluster.NewAntiEntropy(
 		membership, ring, tableManager,
 		time.Duration(cfg.AntiEntropyIntervalSec)*time.Second,
@@ -384,6 +389,7 @@ func main() {
 	// Start background services
 	membership.Start()
 	antiEntropy.Start()
+	replicator.StartReplayLoop()
 
 	log.Printf("HedgehogDB node %s starting", cfg.NodeID)
 	log.Printf("  Bind: %s", cfg.BindAddr)
@@ -405,6 +411,7 @@ func main() {
 
 	membership.Stop()
 	antiEntropy.Stop()
+	replicator.StopReplayLoop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

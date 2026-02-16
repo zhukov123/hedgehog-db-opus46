@@ -133,7 +133,12 @@ func (c *Coordinator) RoutePut(ctx context.Context, tableName, key string, doc m
 		}
 	}
 
-	// Write locally if we're a replica
+	// Strong consistency: quorumWrite handles all writes (local + remote).
+	if consistency == "strong" {
+		return c.quorumWrite(ctx, tableName, key, doc, nodes)
+	}
+
+	// Eventual: write locally if we're a replica, then async replicate.
 	if isReplica {
 		t, err := c.tableManager.GetTable(tableName)
 		if err != nil {
@@ -144,11 +149,6 @@ func (c *Coordinator) RoutePut(ctx context.Context, tableName, key string, doc m
 		}
 	}
 
-	if consistency == "strong" {
-		return c.quorumWrite(ctx, tableName, key, doc, nodes)
-	}
-
-	// Eventual: async replicate to other nodes
 	if c.replicator != nil {
 		go c.replicator.ReplicateWrite(tableName, key, doc, nodes)
 	}
@@ -186,6 +186,12 @@ func (c *Coordinator) RouteDelete(ctx context.Context, tableName, key, consisten
 		}
 	}
 
+	// Strong consistency: quorumDelete handles all deletes (local + remote).
+	if consistency == "strong" {
+		return c.quorumDelete(ctx, tableName, key, nodes)
+	}
+
+	// Eventual: delete locally if we're a replica, then async replicate.
 	if isReplica {
 		t, err := c.tableManager.GetTable(tableName)
 		if err != nil {
@@ -196,11 +202,6 @@ func (c *Coordinator) RouteDelete(ctx context.Context, tableName, key, consisten
 		}
 	}
 
-	if consistency == "strong" {
-		return c.quorumDelete(ctx, tableName, key, nodes)
-	}
-
-	// Eventual: async replicate delete
 	if c.replicator != nil {
 		go c.replicator.ReplicateDelete(tableName, key, nodes)
 	}

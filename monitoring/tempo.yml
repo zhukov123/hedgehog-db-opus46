@@ -1,3 +1,5 @@
+stream_over_http_enabled: true
+
 server:
   http_listen_port: 3200
 
@@ -7,10 +9,36 @@ distributor:
       protocols:
         http:
           endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
 
 ingester:
   trace_idle_period: 10s
-  max_block_bytes: 1000000
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+
+compactor:
+  compaction:
+    block_retention: 1h
+  ring:
+    kvstore:
+      store: inmemory
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      cluster: hedgehogdb-local
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
 
 storage:
   trace:
@@ -19,3 +47,6 @@ storage:
       path: /var/tempo/blocks
     wal:
       path: /var/tempo/wal
+
+usage_report:
+  reporting_enabled: false

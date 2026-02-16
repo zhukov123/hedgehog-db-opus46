@@ -8,6 +8,7 @@ build:
 	go build -o $(BUILD_DIR)/hedgehogctl ./cmd/hedgehogctl
 	go build -o $(BUILD_DIR)/trafficgen ./cmd/trafficgen
 	go build -o $(BUILD_DIR)/genverify ./cmd/genverify
+	go build -o $(BUILD_DIR)/datatest ./cmd/datatest
 	@echo "Built binaries in $(BUILD_DIR)/"
 
 clean:

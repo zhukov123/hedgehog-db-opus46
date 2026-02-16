@@ -1,410 +1,408 @@
 {
-  "dashboard": {
-    "title": "HedgehogDB Overview",
-    "tags": ["hedgehogdb"],
-    "timezone": "browser",
-    "refresh": "5s",
-    "time": { "from": "now-15m", "to": "now" },
-    "templating": {
-      "list": [
+  "uid": "hedgehogdb-overview",
+  "title": "HedgehogDB Overview",
+  "tags": ["hedgehogdb"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+        "query": "label_values(hedgehog_http_requests_total, instance)",
+        "refresh": 2,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "HTTP Overview",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate (req/s)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
         {
-          "name": "instance",
-          "type": "query",
-          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-          "query": "label_values(hedgehog_http_requests_total, instance)",
-          "refresh": 2,
-          "includeAll": true,
-          "current": { "text": "All", "value": "$__all" },
-          "multi": true
+          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[1m])) by (operation)",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
         }
       ]
     },
-    "panels": [
-      {
-        "type": "row",
-        "title": "HTTP Overview",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-        "collapsed": false
-      },
-      {
-        "type": "timeseries",
-        "title": "Request Rate (req/s)",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
-          "overrides": []
+    {
+      "type": "timeseries",
+      "title": "Error Rate (%)",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 },
+          "color": { "mode": "fixed", "fixedColor": "red" }
         },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[1m])) by (operation)",
-            "legendFormat": "{{operation}}",
-            "refId": "A"
-          }
-        ]
+        "overrides": []
       },
-      {
-        "type": "timeseries",
-        "title": "Error Rate (%)",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percentunit",
-            "min": 0, "max": 1,
-            "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 },
-            "color": { "mode": "fixed", "fixedColor": "red" }
-          },
-          "overrides": []
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", status=~\"4xx|5xx\"}[1m])) / sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[1m]))",
+          "legendFormat": "error %",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
         },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", status=~\"4xx|5xx\"}[1m])) / sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[1m]))",
-            "legendFormat": "error %",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Latency p50 / p95 / p99",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
-          "overrides": []
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
         },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.50, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
-            "legendFormat": "p50",
-            "refId": "A"
-          },
-          {
-            "expr": "histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
-            "legendFormat": "p95",
-            "refId": "B"
-          },
-          {
-            "expr": "histogram_quantile(0.99, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
-            "legendFormat": "p99",
-            "refId": "C"
-          }
-        ]
-      },
-      {
-        "type": "stat",
-        "title": "Total Requests (last 5m)",
-        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 9 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-        "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" },
-        "targets": [
-          {
-            "expr": "sum(increase(hedgehog_http_requests_total{instance=~\"$instance\"}[5m]))",
-            "legendFormat": "total",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "stat",
-        "title": "Success Rate (5m)",
-        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 9 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percentunit", "min": 0, "max": 1,
-            "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.99 }] }
-          },
-          "overrides": []
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total Requests (last 5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "sum(increase(hedgehog_http_requests_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "total",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Success Rate (5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.99 }] }
         },
-        "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", status=\"2xx\"}[5m])) / sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[5m]))",
-            "legendFormat": "",
-            "refId": "A"
-          }
-        ]
+        "overrides": []
       },
-      {
-        "type": "stat",
-        "title": "Avg Latency (5m)",
-        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 9 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "s",
-            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.1 }, { "color": "red", "value": 0.5 }] }
-          },
-          "overrides": []
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", status=\"2xx\"}[5m])) / sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Avg Latency (5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.1 }, { "color": "red", "value": 0.5 }] }
         },
-        "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_request_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum(rate(hedgehog_http_request_duration_seconds_count{instance=~\"$instance\"}[5m]))",
-            "legendFormat": "",
-            "refId": "A"
-          }
-        ]
+        "overrides": []
       },
-      {
-        "type": "stat",
-        "title": "Active Nodes",
-        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 9 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 2 }, { "color": "green", "value": 3 }] }
-          },
-          "overrides": []
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_request_duration_seconds_sum{instance=~\"$instance\"}[5m])) / sum(rate(hedgehog_http_request_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active Nodes",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 2 }, { "color": "green", "value": 3 }] }
         },
-        "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
-        "targets": [
-          {
-            "expr": "count(up{job=\"hedgehogdb\"} == 1)",
-            "legendFormat": "",
-            "refId": "A"
-          }
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "count(up{job=\"hedgehogdb\"} == 1)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Operations Breakdown",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate by Operation",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", operation=~\"get_item|put_item|delete_item|scan_items|table_count\"}[1m])) by (operation)",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency by Operation (p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\", operation=~\"get_item|put_item|delete_item\"}[1m])) by (le, operation))",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate by Table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", table!=\"\"}[1m])) by (table)",
+          "legendFormat": "{{table}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate by Status",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "2xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "4xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "5xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
         ]
       },
-      {
-        "type": "row",
-        "title": "Operations Breakdown",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
-        "collapsed": false
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[1m])) by (status)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate per Node",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": []
       },
-      {
-        "type": "timeseries",
-        "title": "Request Rate by Operation",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "stacking": { "mode": "normal" } } },
-          "overrides": []
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total[1m])) by (instance)",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency per Node (p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket[1m])) by (le, instance))",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Replication",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Replication Send Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*success.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byRegexp", "options": ".*hinted.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_replication_send_total{instance=~\"$instance\"}[1m])) by (op, result)",
+          "legendFormat": "{{op}} / {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Replication Received Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*success.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_replication_received_total{instance=~\"$instance\"}[1m])) by (op, result)",
+          "legendFormat": "{{op}} / {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Hinted Handoff Pending",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2 },
+          "color": { "mode": "fixed", "fixedColor": "orange" }
         },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", operation=~\"get_item|put_item|delete_item|scan_items|table_count\"}[1m])) by (operation)",
-            "legendFormat": "{{operation}}",
-            "refId": "A"
-          }
-        ]
+        "overrides": []
       },
-      {
-        "type": "timeseries",
-        "title": "Latency by Operation (p95)",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
-          "overrides": []
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(hedgehog_replication_hinted_handoff_pending{instance=~\"$instance\"}) by (target_node)",
+          "legendFormat": "-> {{target_node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Replication Received Latency (p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(hedgehog_replication_received_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, op))",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Hint Replay Ops",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_replication_hint_replay_ops_total{instance=~\"$instance\"}[1m])) by (target_node, op)",
+          "legendFormat": "{{target_node}} / {{op}}",
+          "refId": "A"
         },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket{instance=~\"$instance\", operation=~\"get_item|put_item|delete_item\"}[1m])) by (le, operation))",
-            "legendFormat": "{{operation}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Request Rate by Table",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
-          "overrides": []
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", table!=\"\"}[1m])) by (table)",
-            "legendFormat": "{{table}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Request Rate by Status",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
-          "overrides": [
-            { "matcher": { "id": "byName", "options": "2xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
-            { "matcher": { "id": "byName", "options": "4xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
-            { "matcher": { "id": "byName", "options": "5xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
-          ]
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\"}[1m])) by (status)",
-            "legendFormat": "{{status}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Request Rate per Node",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
-          "overrides": []
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_http_requests_total[1m])) by (instance)",
-            "legendFormat": "{{instance}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Latency per Node (p95)",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
-          "overrides": []
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket[1m])) by (le, instance))",
-            "legendFormat": "{{instance}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "row",
-        "title": "Replication",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
-        "collapsed": false
-      },
-      {
-        "type": "timeseries",
-        "title": "Replication Send Rate",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 39 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
-          "overrides": [
-            { "matcher": { "id": "byRegexp", "options": ".*success.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
-            { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
-            { "matcher": { "id": "byRegexp", "options": ".*hinted.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
-          ]
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_replication_send_total{instance=~\"$instance\"}[1m])) by (op, result)",
-            "legendFormat": "{{op}} / {{result}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Replication Received Rate",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 39 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
-          "overrides": [
-            { "matcher": { "id": "byRegexp", "options": ".*success.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
-            { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
-          ]
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_replication_received_total{instance=~\"$instance\"}[1m])) by (op, result)",
-            "legendFormat": "{{op}} / {{result}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Hinted Handoff Pending",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 39 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2 },
-            "color": { "mode": "fixed", "fixedColor": "orange" }
-          },
-          "overrides": []
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(hedgehog_replication_hinted_handoff_pending{instance=~\"$instance\"}) by (target_node)",
-            "legendFormat": "-> {{target_node}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Replication Received Latency (p95)",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 47 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
-          "overrides": []
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, sum(rate(hedgehog_replication_received_duration_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, op))",
-            "legendFormat": "{{op}}",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "type": "timeseries",
-        "title": "Hint Replay Ops",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 47 },
-        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-        "fieldConfig": {
-          "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
-          "overrides": []
-        },
-        "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
-        "targets": [
-          {
-            "expr": "sum(rate(hedgehog_replication_hint_replay_ops_total{instance=~\"$instance\"}[1m])) by (target_node, op)",
-            "legendFormat": "{{target_node}} / {{op}}",
-            "refId": "A"
-          },
-          {
-            "expr": "sum(rate(hedgehog_replication_hint_replay_total{instance=~\"$instance\"}[1m])) by (target_node, result)",
-            "legendFormat": "replay {{target_node}} / {{result}}",
-            "refId": "B"
-          }
-        ]
-      }
-    ],
-    "schemaVersion": 39
-  },
-  "overwrite": true
+        {
+          "expr": "sum(rate(hedgehog_replication_hint_replay_total{instance=~\"$instance\"}[1m])) by (target_node, result)",
+          "legendFormat": "replay {{target_node}} / {{result}}",
+          "refId": "B"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39
 }

@@ -84,6 +84,17 @@ func OpenTable(name string, opts TableOptions) (*Table, error) {
 		return nil, fmt.Errorf("open B+ tree for table %s: %w", name, err)
 	}
 
+	// Wire WAL into the B+ tree so Insert/Delete are crash-safe.
+	tree.SetWAL(wal)
+
+	// Enable WAL group commit: batch multiple transactions' syncs into a
+	// single fsync every few milliseconds (same technique as PostgreSQL).
+	wal.EnableGroupCommit(storage.DefaultGroupCommitWindow)
+
+	// Start the background dirty-page flush loop (WAL provides durability
+	// so writes can return without synchronously flushing pages to disk).
+	pool.StartFlushLoop()
+
 	return &Table{
 		Name:     name,
 		tree:     tree,
@@ -114,9 +125,11 @@ func (t *Table) GetItem(key string) (map[string]interface{}, error) {
 }
 
 // PutItem stores a JSON document with the given key.
+// Uses RLock because the B+ tree has its own internal write lock;
+// the table-level lock only needs to prevent concurrent schema changes (e.g. drop).
 func (t *Table) PutItem(key string, doc map[string]interface{}) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
 	data, err := json.Marshal(doc)
 	if err != nil {
@@ -127,9 +140,10 @@ func (t *Table) PutItem(key string, doc map[string]interface{}) error {
 }
 
 // DeleteItem removes a document by key.
+// Uses RLock because the B+ tree has its own internal write lock.
 func (t *Table) DeleteItem(key string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
 	return t.tree.Delete(EncodeKey(key))
 }
@@ -148,13 +162,27 @@ func (t *Table) Scan(fn func(key string, doc map[string]interface{}) bool) error
 	})
 }
 
+// ScanChunked iterates over all items, releasing the B+ tree read lock
+// every chunkSize entries so concurrent writers are not blocked for long.
+// This is intended for background operations like anti-entropy.
+func (t *Table) ScanChunked(chunkSize int, fn func(key string, doc map[string]interface{}) bool) error {
+	return t.tree.ScanChunked(chunkSize, func(k, v []byte) bool {
+		var doc map[string]interface{}
+		if err := json.Unmarshal(v, &doc); err != nil {
+			return true // skip corrupt entries
+		}
+		return fn(DecodeKey(k), doc)
+	})
+}
+
 // Count returns the number of items in the table.
 func (t *Table) Count() (int, error) {
 	return t.tree.Count()
 }
 
-// Close flushes and closes the table.
+// Close stops the flush loop, flushes all remaining dirty pages, and closes the table.
 func (t *Table) Close() error {
+	t.pool.StopFlushLoop()
 	if err := t.tree.Close(); err != nil {
 		return err
 	}

@@ -28,7 +28,7 @@ type Config struct {
 	FailureTimeoutMS    int `json:"failure_timeout_ms"`    // default 5000
 
 	// Anti-entropy
-	AntiEntropyIntervalSec int `json:"anti_entropy_interval_sec"` // default 300 (5 min)
+	AntiEntropyIntervalSec int `json:"anti_entropy_interval_sec"` // default 1800 (30 min)
 }
 
 // DefaultConfig returns a config with sensible defaults.
@@ -44,7 +44,7 @@ func DefaultConfig() *Config {
 		BufferPoolSize:         1024,
 		HeartbeatIntervalMS:    1000,
 		FailureTimeoutMS:       5000,
-		AntiEntropyIntervalSec: 300,
+		AntiEntropyIntervalSec: 1800,
 	}
 }
 

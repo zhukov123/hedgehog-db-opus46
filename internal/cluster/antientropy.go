@@ -33,7 +33,7 @@ type MerkleNode struct {
 // BuildMerkleTree builds a Merkle tree over the keys in a table.
 func BuildMerkleTree(t *table.Table) (*MerkleNode, error) {
 	var items []merkleKV
-	err := t.Scan(func(key string, doc map[string]interface{}) bool {
+	err := t.ScanChunked(500, func(key string, doc map[string]interface{}) bool {
 		data, _ := json.Marshal(doc)
 		items = append(items, merkleKV{key: key, value: data})
 		return true
@@ -175,9 +175,10 @@ func (ae *AntiEntropy) syncTableWithNode(tableName string, node *NodeInfo) error
 		return err
 	}
 
-	// Collect local keys and values
+	// Collect local keys and values (chunked to avoid holding the B+ tree
+	// read lock for the entire scan, which would block concurrent writes).
 	localData := make(map[string][]byte)
-	err = t.Scan(func(key string, doc map[string]interface{}) bool {
+	err = t.ScanChunked(500, func(key string, doc map[string]interface{}) bool {
 		data, _ := json.Marshal(doc)
 		localData[key] = data
 		return true
@@ -252,7 +253,7 @@ func (ae *AntiEntropy) RegisterRoutes(router interface {
 		}
 
 		keys := make(map[string]string)
-		err = t.Scan(func(key string, doc map[string]interface{}) bool {
+		err = t.ScanChunked(500, func(key string, doc map[string]interface{}) bool {
 			data, _ := json.Marshal(doc)
 			keys[key] = hashBytes(data)
 			return true
