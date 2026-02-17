@@ -21,7 +21,8 @@ type Config struct {
 	WriteQuorum    int      `json:"write_quorum"`      // W (default 2)
 
 	// Storage
-	BufferPoolSize int `json:"buffer_pool_size"` // pages (default 1024)
+	BufferPoolSize  int `json:"buffer_pool_size"`  // pages (default 1024)
+	PartitionCount int `json:"partition_count"` // partitions per table for parallel writes (default 8); 1 = legacy
 
 	// Membership
 	HeartbeatIntervalMS int `json:"heartbeat_interval_ms"` // default 1000
@@ -42,6 +43,7 @@ func DefaultConfig() *Config {
 		ReadQuorum:             2,
 		WriteQuorum:            2,
 		BufferPoolSize:         1024,
+		PartitionCount:         8,
 		HeartbeatIntervalMS:    1000,
 		FailureTimeoutMS:       5000,
 		AntiEntropyIntervalSec: 1800,

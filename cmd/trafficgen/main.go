@@ -22,10 +22,11 @@ import (
 )
 
 var (
-	baseURL     string
-	urls        string // comma-separated; if set we round-robin across these instead of single baseURL
-	urlList     []string
-	urlIndex    atomic.Uint64
+	baseURL              string
+	urls                 string   // comma-separated; if set we round-robin across these instead of single baseURL
+	urlList              []string
+	urlIndex             atomic.Uint64
+	forceSingleURL       atomic.Bool // when true, getBaseURL always returns first URL (write-stress single-node)
 	insertsPS   float64
 	updatesPS   float64
 	deletesPS   float64
@@ -39,11 +40,13 @@ var (
 	stressErrorThreshold float64
 
 	// Write-stress test flags (separate mode: ramp writes until p95 latency hits limit)
-	writeStressMode      bool
-	writeStressInitial   float64
-	writeStressStep      float64
-	writeStressDuration  time.Duration
-	writeStressP95LimitMs float64
+	writeStressMode         bool
+	writeStressInitial      float64
+	writeStressStep         float64
+	writeStressDuration     time.Duration
+	writeStressP95LimitMs   float64
+	writeStressConsistency  string // "strong" or "eventual"
+	writeStressSingleNode   bool   // when true, send all writes to first URL only (no round-robin)
 )
 
 var (
@@ -92,6 +95,7 @@ Example:
   ./bin/trafficgen -stress -stress-step 200 -stress-duration 15s -stress-error-threshold 0.02
   ./bin/trafficgen -write-stress
   ./bin/trafficgen -write-stress -write-stress-initial 50 -write-stress-step 25 -write-stress-duration 30s -write-stress-p95-limit 500
+  ./bin/trafficgen -write-stress -write-stress-consistency eventual -write-stress-single-node -url http://127.0.0.1:8081
 `)
 	}
 	flag.StringVar(&baseURL, "url", getEnv("HEDGEHOG_URL", "http://localhost:8081"), "HedgehogDB base URL (used when -urls is not set; default 8081 = first cluster node)")
@@ -105,11 +109,13 @@ Example:
 	flag.Float64Var(&stressStep, "stress-step", 100, "req/s added each stress step")
 	flag.DurationVar(&stressDuration, "stress-duration", 10*time.Second, "how long to hold each rate before ramping")
 	flag.Float64Var(&stressErrorThreshold, "stress-error-threshold", 0.05, "error percentage that triggers stop (0.05 = 5%)")
-	flag.BoolVar(&writeStressMode, "write-stress", false, "write-stress mode: ramp strong writes until p95 latency hits limit, then report benchmark")
+	flag.BoolVar(&writeStressMode, "write-stress", false, "write-stress mode: ramp writes until p95 latency hits limit, then report benchmark")
 	flag.Float64Var(&writeStressInitial, "write-stress-initial", 50, "initial write rate (writes/s) for write-stress")
 	flag.Float64Var(&writeStressStep, "write-stress-step", 25, "write rate increment per step (writes/s)")
 	flag.DurationVar(&writeStressDuration, "write-stress-duration", 30*time.Second, "how long to hold each write rate before checking p95")
-	flag.Float64Var(&writeStressP95LimitMs, "write-stress-p95-limit", 500, "stop when p95 latency (ms) for strong writes reaches this; benchmark = previous step rate")
+	flag.Float64Var(&writeStressP95LimitMs, "write-stress-p95-limit", 500, "stop when p95 latency (ms) reaches this; benchmark = previous step rate")
+	flag.StringVar(&writeStressConsistency, "write-stress-consistency", "strong", "write consistency: strong (quorum) or eventual (single-node, no quorum wait)")
+	flag.BoolVar(&writeStressSingleNode, "write-stress-single-node", false, "send all write-stress traffic to first URL only (use -url for max single-node throughput)")
 	flag.Parse()
 
 	if insertsOnly {
@@ -136,8 +142,17 @@ Example:
 		log.Printf("Stress test | base inserts=%.1f/s updates=%.1f/s deletes=%.1f/s reads=%.1f/s", insertsPS, updatesPS, deletesPS, readsPS)
 		log.Printf("Stress test | step=%.0f req/s duration=%v threshold=%.1f%%", stressStep, stressDuration, stressErrorThreshold*100)
 	} else if writeStressMode {
-		log.Printf("Write-stress | strong writes only; initial=%.0f/s step=%.0f/s duration=%v p95-limit=%.0fms",
-			writeStressInitial, writeStressStep, writeStressDuration, writeStressP95LimitMs)
+		cons := writeStressConsistency
+		if cons != "strong" && cons != "eventual" {
+			cons = "strong"
+			writeStressConsistency = cons
+		}
+		singleNode := ""
+		if writeStressSingleNode {
+			singleNode = " single-node"
+		}
+		log.Printf("Write-stress | %s writes%s; initial=%.0f/s step=%.0f/s duration=%v p95-limit=%.0fms",
+			cons, singleNode, writeStressInitial, writeStressStep, writeStressDuration, writeStressP95LimitMs)
 	} else {
 		log.Printf("Traffic gen | inserts=%.1f/s updates=%.1f/s deletes=%.1f/s reads=%.1f/s", insertsPS, updatesPS, deletesPS, readsPS)
 	}
@@ -151,7 +166,8 @@ Example:
 	}
 
 	// When we had a single URL, send traffic to all cluster nodes so counts grow on every node
-	if len(urlList) == 1 {
+	// (skip when write-stress single-node: we intentionally hit only one node)
+	if len(urlList) == 1 && !(writeStressMode && writeStressSingleNode) {
 		if all := getClusterURLs(urlList[0]); len(all) > 1 {
 			urlList = all
 			log.Printf("Sending traffic to all %d nodes (round-robin)", len(urlList))
@@ -225,7 +241,11 @@ func getEnv(key, fallback string) string {
 }
 
 // getBaseURL returns the next URL when round-robin across urlList; otherwise the single URL.
+// When forceSingleURL is set (write-stress single-node), always returns the first URL.
 func getBaseURL() string {
+	if forceSingleURL.Load() || len(urlList) == 1 {
+		return bootstrapURL()
+	}
 	if len(urlList) == 0 {
 		return strings.TrimSuffix(baseURL, "/")
 	}
@@ -783,11 +803,13 @@ func doPut(table, key string, body []byte) (bool, error) {
 	return ok, err
 }
 
-// doPutWithConsistency performs PUT with optional ?consistency=strong and returns latency, success, and error.
+// doPutWithConsistency performs PUT with optional ?consistency=strong|eventual and returns latency, success, and error.
 func doPutWithConsistency(table, key string, body []byte, consistency string) (latency time.Duration, ok bool, err error) {
 	path := "/api/v1/tables/" + table + "/items/" + url.PathEscape(key)
 	if consistency == "strong" {
 		path += "?consistency=strong"
+	} else if consistency == "eventual" {
+		path += "?consistency=eventual"
 	}
 	req, err := http.NewRequest("PUT", getBaseURL()+path, bytes.NewReader(body))
 	if err != nil {
@@ -1066,6 +1088,14 @@ func (b *latencyBuffer) Count() int {
 }
 
 func runWriteStress(pools map[string]*keyPool, mu *sync.Mutex, counters map[string]int, sig <-chan os.Signal) {
+	if writeStressSingleNode {
+		forceSingleURL.Store(true)
+	}
+	cons := writeStressConsistency
+	if cons != "strong" && cons != "eventual" {
+		cons = "strong"
+	}
+
 	var buf latencyBuffer
 	currentRate := writeStressInitial
 	prevRate := currentRate
@@ -1078,7 +1108,7 @@ func runWriteStress(pools map[string]*keyPool, mu *sync.Mutex, counters map[stri
 		insertCnt.Store(0)
 		errCnt.Store(0)
 
-		log.Printf("Write-stress step %d: %.0f strong writes/s (p95 limit %.0f ms)", step, currentRate, writeStressP95LimitMs)
+		log.Printf("Write-stress step %d: %.0f %s writes/s (p95 limit %.0f ms)", step, currentRate, cons, writeStressP95LimitMs)
 
 		stop := make(chan struct{})
 		nw := workerCount(currentRate)
@@ -1131,7 +1161,7 @@ func runWriteStress(pools map[string]*keyPool, mu *sync.Mutex, counters map[stri
 							"status":     "completed",
 						})
 					}
-					latency, ok, err := doPutWithConsistency(tbl, key, body, "strong")
+					latency, ok, err := doPutWithConsistency(tbl, key, body, cons)
 					buf.Add(latency)
 					if ok {
 						insertCnt.Add(1)
@@ -1188,9 +1218,13 @@ func runWriteStress(pools map[string]*keyPool, mu *sync.Mutex, counters map[stri
 }
 
 func printWriteStressBenchmark(benchmarkRate float64, steps int) {
+	cons := writeStressConsistency
+	if cons != "strong" && cons != "eventual" {
+		cons = "strong"
+	}
 	fmt.Println()
-	fmt.Println("Write-stress benchmark (strong writes):")
+	fmt.Printf("Write-stress benchmark (%s writes):\n", cons)
 	fmt.Printf("  Steps completed: %d\n", steps)
-	fmt.Printf("  Max write rate before p95 exceeded limit: %.0f strong writes/s\n", benchmarkRate)
+	fmt.Printf("  Max write rate before p95 exceeded limit: %.0f %s writes/s\n", benchmarkRate, cons)
 	fmt.Println()
 }

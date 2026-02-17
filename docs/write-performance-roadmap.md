@@ -51,6 +51,31 @@ Re-run the same trafficgen command after changes to compare.
 | 3     | (run in progress when captured) | — |
 - **Conclusion:** Option 1 keeps throughput in the **700–725 writes/s** range (similar to pre–Option 1 best runs). The main gain is lower latency when only one writer is active (no 2ms group-commit wait) and one fewer `FetchPage` per insert on the hot path.
 
+## After Option 2 (16 Feb 2026)
+
+**Implemented:** Table-level key partitioning with 8 partitions per table (configurable via `partition_count`). Each partition has its own B+ tree, WAL, and lock; keys are routed by `hash(key) % N`. Scans merge across partitions via sorted min-heap.
+
+**To test with partitioning:** Use a fresh cluster so new tables are created with partition files:
+```bash
+rm -rf data/
+./scripts/start-cluster.sh   # in one terminal
+# Wait for cluster to be ready, then:
+./bin/trafficgen -write-stress -write-stress-p95-limit 300 \
+  -write-stress-initial 50 -write-stress-step 25 -write-stress-duration 20s \
+  -urls "http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083"
+```
+
+**Note:** Existing tables (e.g. `users.db`) use the legacy single-file layout for backward compatibility. Only newly created tables after enabling partitioning use `{name}_p0.db` … `{name}_p7.db`.
+
+**Stress test (fresh cluster, partitioned layout, 16 Feb 2026):**
+| Round | Keys/table (start) | Max write rate (p95 ≤ 300 ms) |
+|-------|--------------------|-------------------------------|
+| 1     | 0                  | **750** strong writes/s       |
+| 2     | ~28k               | **825** strong writes/s       |
+| 3     | ~46k               | (cluster timeouts)            |
+- **Before (Option 1, non-partitioned):** 625–725 writes/s
+- **After (Option 2, partitioned):** 750–825 writes/s → **~12–15% gain**, and round 2 shows partitioning *holds* throughput as trees grow (825 with 28k keys vs 625 with similar load before)
+
 ## Bottleneck
 
 Every write acquires an exclusive lock on the B+ tree (`tree.mu.Lock()` in `btree.go`). Only one write can be inside the tree at a time per table. The critical path under the lock:
@@ -72,15 +97,14 @@ As the tree grows deeper and splits more often, each write holds the lock longer
 - Pre-allocate page buffers to reduce GC pressure
 - Consider caching the root-to-leaf path for sequential inserts
 
-### 2. Table-level key partitioning (moderate, ~4-8x)
+### 2. Table-level key partitioning (moderate, ~4-8x) — *done*
 
 Split each table into N sub-trees (e.g., 8), each with its own B+ tree, WAL, and lock. Route keys by hash to a partition. Writes to different partitions proceed in parallel.
 
-- Clean, well-understood pattern (used by CockroachDB, Cassandra, etc.)
-- Multiplies write throughput by partition count
-- Doesn't change B+ tree internals
-- Scans need to merge across partitions (sorted merge)
-- Partition count could be configurable per table
+- Implemented: `PartitionCount` (default 8) in config; hash(key) % N routing; per-partition B+ tree, WAL, lock
+- Backward compat: existing `{name}.db` tables use legacy single-partition layout
+- New tables use `{name}_p0.db` … `{name}_p7.db`; scans merge across partitions (min-heap sorted merge)
+- Set `partition_count` in config or use default 8. Restart cluster with fresh `data/` to create partitioned tables.
 
 ### 3. Write batching at the API level (moderate, ~3-5x)
 

@@ -213,11 +213,20 @@ func (tm *TableManager) DeleteTable(name string) error {
 		return err
 	}
 
-	// Remove data files
+	// Remove data files (legacy or partitioned)
 	dbPath := filepath.Join(tm.dataDir, name+".db")
 	walPath := filepath.Join(tm.dataDir, name+".wal")
 	os.Remove(dbPath)
 	os.Remove(walPath)
+	for i := 0; i < 32; i++ {
+		pDb := filepath.Join(tm.dataDir, fmt.Sprintf("%s_p%d.db", name, i))
+		pWal := filepath.Join(tm.dataDir, fmt.Sprintf("%s_p%d.wal", name, i))
+		if _, err := os.Stat(pDb); os.IsNotExist(err) {
+			break
+		}
+		os.Remove(pDb)
+		os.Remove(pWal)
+	}
 
 	return nil
 }

@@ -121,8 +121,9 @@ func main() {
 	}
 
 	tableOpts := table.TableOptions{
-		DataDir:        cfg.DataDir,
-		BufferPoolSize: cfg.BufferPoolSize,
+		DataDir:         cfg.DataDir,
+		BufferPoolSize:  cfg.BufferPoolSize,
+		PartitionCount:  cfg.PartitionCount,
 	}
 	tableManager := table.NewTableManager(catalog, tableOpts)
 
