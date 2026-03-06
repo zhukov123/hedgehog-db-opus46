@@ -114,6 +114,19 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 // classifyRequest derives operation name and table from method+path.
 func classifyRequest(method, path string) (operation, tableName string) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
+	// /internal/v1/replicate (POST=put, GET=get, DELETE=delete) -> replicate_put etc. so "other" is not inflated
+	if len(parts) >= 3 && parts[0] == "internal" && parts[1] == "v1" && parts[2] == "replicate" {
+		switch method {
+		case "POST":
+			return "replicate_put", ""
+		case "GET":
+			return "replicate_get", ""
+		case "DELETE":
+			return "replicate_delete", ""
+		default:
+			return "replicate_other", ""
+		}
+	}
 	// /api/v1/tables
 	// /api/v1/tables/{name}
 	// /api/v1/tables/{name}/items

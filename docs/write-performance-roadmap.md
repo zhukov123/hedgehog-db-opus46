@@ -33,7 +33,14 @@ Measured before any write-performance changes. Use this to validate improvements
 | 3   | **675** writes/s       | 700/s → p95 308 ms | Similar to run 1 |
 - **Conclusion:** Numbers vary a lot with tree size and recent load. Use **~100–225 writes/s** as a conservative baseline for “large tree” conditions; **~675–700 writes/s** when trees are smaller. For before/after comparison, run multiple times or fix tree size (e.g. fresh data dir or same key count).
 
-**Double-check in Grafana:** Start the observability stack (`./scripts/start-observability.sh`), then open **http://localhost:3001/d/hedgehogdb-overview**. During or after write-stress: **Request rate** = `sum(rate(hedgehog_http_requests_total[1m])) by (operation)` (look for `put`); **Latency p95** = `histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket[1m])) by (le))` (in seconds; multiply by 1000 for ms). Prometheus: http://localhost:9090.
+**Double-check in Grafana:** Start the observability stack (`./scripts/start-observability.sh`), then open **http://localhost:3001/d/hedgehogdb-overview**. The metric that matches trafficgen’s “strong writes/s” (total write throughput) is the **put_item** rate:
+
+- **Total write throughput (cluster):**  
+  `sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", operation=\"put_item\"}[1m]))`  
+  In the dashboard this is the **put_item** series in **“Request Rate (req/s)”** or **“Request Rate by Operation”**. With instance = All, that sum is the cluster-wide PUT rate in req/s.
+- **Latency p95:**  
+  `histogram_quantile(0.95, sum(rate(hedgehog_http_request_duration_seconds_bucket[1m])) by (le))`  
+  (result in seconds; multiply by 1000 for ms). Prometheus: http://localhost:9090.
 
 Re-run the same trafficgen command after changes to compare.
 

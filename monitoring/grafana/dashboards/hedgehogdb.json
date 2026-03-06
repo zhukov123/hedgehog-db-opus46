@@ -5,6 +5,7 @@
   "timezone": "browser",
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
+  "description": "Compare runs by cluster total: use \"Cluster total\" panels (they ignore instance filter). Per-node panels show rate per node — with more nodes, each node has a lower rate.",
   "templating": {
     "list": [
       {
@@ -28,8 +29,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Request Rate (req/s)",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "title": "Request Rate (req/s) — filtered by instance",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
@@ -42,12 +43,32 @@
           "legendFormat": "{{operation}}",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Sums only selected instances (use instance dropdown). For cluster total, see stat \"Total write throughput\" or panel below."
+    },
+    {
+      "type": "timeseries",
+      "title": "Cluster total request rate (all nodes) — use to compare 10 vs 20 node runs",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total{job=\"hedgehogdb\"}[1m])) by (operation)",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Sum over every node (job=hedgehogdb). put_item = total write throughput; same as trafficgen writes/s."
     },
     {
       "type": "timeseries",
       "title": "Error Rate (%)",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": {
@@ -70,7 +91,7 @@
     {
       "type": "timeseries",
       "title": "Latency p50 / p95 / p99",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } },
@@ -97,8 +118,27 @@
     },
     {
       "type": "stat",
+      "title": "Total write throughput (put_item) — matches trafficgen writes/s",
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "decimals": 1 },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [
+        {
+          "expr": "sum(rate(hedgehog_http_requests_total{job=\"hedgehogdb\", operation=\"put_item\"}[1m]))",
+          "legendFormat": "put_item",
+          "refId": "A"
+        }
+      ],
+      "description": "Cluster total client PUT rate only (all nodes, ignores instance filter). Equivalent to trafficgen \"strong writes/s\". Replicate traffic is labeled replicate_put, not put_item."
+    },
+    {
+      "type": "stat",
       "title": "Total Requests (last 5m)",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 9 },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" },
@@ -113,7 +153,7 @@
     {
       "type": "stat",
       "title": "Success Rate (5m)",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 9 },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": {
@@ -134,7 +174,7 @@
     {
       "type": "stat",
       "title": "Avg Latency (5m)",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 9 },
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": {
@@ -155,7 +195,7 @@
     {
       "type": "stat",
       "title": "Active Nodes",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 9 },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": {
@@ -191,11 +231,12 @@
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
       "targets": [
         {
-          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", operation=~\"get_item|put_item|delete_item|scan_items|table_count\"}[1m])) by (operation)",
+          "expr": "sum(rate(hedgehog_http_requests_total{instance=~\"$instance\", operation=~\"get_item|put_item|delete_item|scan_items|table_count|replicate_put|replicate_get|replicate_delete\"}[1m])) by (operation)",
           "legendFormat": "{{operation}}",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "put_item = client writes (trafficgen writes/s). replicate_put/get/delete = internal replication; exclude from client throughput."
     },
     {
       "type": "timeseries",
@@ -271,7 +312,8 @@
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Per-node rate. With more nodes, traffic is spread so each node shows a lower rate (e.g. 20 nodes ≈ half the rate per node vs 10 nodes). For total throughput use \"Cluster total request rate\" or \"Total write throughput\" stat."
     },
     {
       "type": "timeseries",
@@ -289,7 +331,8 @@
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Per-node p95 latency. With more nodes, each node handles less load so per-node latency can be lower; total cluster throughput is in \"Cluster total\" / \"Total write throughput\"."
     },
     {
       "type": "row",
