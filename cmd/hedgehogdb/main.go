@@ -55,6 +55,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to load config: %v", err)
 		}
+		// Flags override file for pod identity and seeds (e.g. in Kubernetes)
+		cfg.NodeID = nodeID
+		cfg.BindAddr = bindAddr
+		cfg.DataDir = dataDir
+		if seedNodes != "" {
+			cfg.SeedNodes = strings.Split(seedNodes, ",")
+		}
 	} else {
 		cfg = config.DefaultConfig()
 		cfg.NodeID = nodeID

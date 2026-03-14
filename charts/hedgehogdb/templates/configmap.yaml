@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hedgehogdb.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hedgehogdb.labels" . | nindent 4 }}
+data:
+  config.json: |
+    {
+      "node_id": "",
+      "bind_addr": "{{ .Values.config.bind_addr }}",
+      "data_dir": "{{ .Values.config.data_dir }}",
+      "seed_nodes": [],
+      "virtual_nodes": {{ .Values.config.virtual_nodes }},
+      "replication_n": {{ .Values.config.replication_n }},
+      "read_quorum": {{ .Values.config.read_quorum }},
+      "write_quorum": {{ .Values.config.write_quorum }},
+      "buffer_pool_size": {{ .Values.config.buffer_pool_size }},
+      "partition_count": {{ .Values.config.partition_count }},
+      "heartbeat_interval_ms": {{ .Values.config.heartbeat_interval_ms }},
+      "failure_timeout_ms": {{ .Values.config.failure_timeout_ms }},
+      "anti_entropy_interval_sec": {{ .Values.config.anti_entropy_interval_sec }}
+    }

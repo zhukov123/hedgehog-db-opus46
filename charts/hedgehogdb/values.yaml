@@ -1,0 +1,42 @@
+replicaCount: 3
+
+image:
+  repository: hedgehogdb
+  tag: latest
+  pullPolicy: Never
+
+nameOverride: ""
+fullnameOverride: ""
+
+# App config (JSON keys match internal/config.Config). node_id and seed_nodes are overridden per-pod by the entrypoint.
+config:
+  bind_addr: "0.0.0.0:8080"
+  data_dir: "/data"
+  virtual_nodes: 128
+  replication_n: 3
+  read_quorum: 2
+  write_quorum: 2
+  buffer_pool_size: 1024
+  partition_count: 8
+  heartbeat_interval_ms: 1000
+  failure_timeout_ms: 5000
+  anti_entropy_interval_sec: 1800
+
+persistence:
+  size: 5Gi
+  storageClass: ""
+
+# Optional: OpenTelemetry endpoint (e.g. Tempo). Empty disables tracing.
+otel:
+  exporterOtlpEndpoint: ""
+
+ingress:
+  enabled: true
+  className: traefik
+  host: hedgehogdb.local
+  tls: []
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

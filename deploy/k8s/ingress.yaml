@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hedgehogdb
+  namespace: hedgehogdb
+  labels:
+    app: hedgehogdb
+  annotations:
+    # Traefik (k3s default)
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+    - host: hedgehogdb.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hedgehogdb-api
+                port:
+                  number: 8080

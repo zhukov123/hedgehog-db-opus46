@@ -2,6 +2,16 @@
 
 This document outlines a step-by-step plan to deploy HedgehogDB (and optional monitoring) to a k3s cluster.
 
+## Quick start (implemented)
+
+- **Image**: `Dockerfile` and `entrypoint.sh` at repo root. Build: `docker build -t hedgehogdb:latest .` Load into k3s: `docker save hedgehogdb:latest | sudo k3s ctr images import -`
+- **Raw YAML**: `deploy/k8s/` (namespace, ConfigMap, headless Service, StatefulSet, Service, Ingress). Apply: `kubectl apply -f deploy/k8s/`
+- **Monitoring**: `deploy/k8s/monitoring/` (Prometheus, Tempo, Grafana + dashboards). Apply after HedgehogDB: `kubectl apply -f deploy/k8s/monitoring/`
+- **Helm**: `charts/hedgehogdb/`. Install: `helm install hedgehogdb ./charts/hedgehogdb -n hedgehogdb`
+- **Access**: Add to `/etc/hosts`: `hedgehogdb.local` and `grafana.hedgehogdb.local` → your cluster/ingress IP. Or `kubectl port-forward svc/hedgehogdb-api 8080:8080 -n hedgehogdb`
+
+Decisions for this deployment: local image load, 3 replicas, Traefik Ingress, ConfigMap for app settings (flags override per-pod identity and seeds), monitoring stack included, reusable product via Helm chart.
+
 ---
 
 ## 1. Overview
@@ -107,9 +117,9 @@ Pattern: all previous pods’ addresses. You can generate this in the container 
 
 Clients (and Grafana/Prometheus if in-cluster) use `hedgehogdb-api.hedgehogdb.svc.cluster.local:8080` for load-balanced access to any node.
 
-### 4.4 Optional: ConfigMap for JSON config
+### 4.4 ConfigMap for app settings
 
-If you prefer a config file instead of flags, add a ConfigMap with a JSON config and mount it; run with `-config /etc/hedgehogdb/config.json`. Seed nodes in that config can still use the same DNS names (e.g. `hedgehogdb-0.hedgehogdb:8080`).
+A single **ConfigMap** (e.g. `hedgehogdb-config`) holds shared app settings as JSON: `replication_n`, `read_quorum`, `write_quorum`, `buffer_pool_size`, `partition_count`, `heartbeat_interval_ms`, `failure_timeout_ms`, `anti_entropy_interval_sec`, `virtual_nodes`. Mount it at **`/etc/hedgehogdb/config.json`**. The container entrypoint runs the binary with `-config /etc/hedgehogdb/config.json` so the app loads this base config. **Pod identity and seeds** (`node_id`, `bind_addr`, `data_dir`, `seed_nodes`) must differ per pod, so they are **not** taken from the ConfigMap; the entrypoint passes them as flags (`-node-id`, `-bind`, `-data-dir`, `-seed-nodes`), and the app **overrides** the file with those flag values when both config file and flags are present. No per-pod ConfigMap or init container is needed.
 
 ---
 
@@ -118,6 +128,41 @@ If you prefer a config file instead of flags, add a ConfigMap with a JSON config
 - **StatefulSet** starts pods in order (0, 1, 2, …). That matches “first node has no seeds, others seed from previous nodes.”
 - Add a **readinessProbe** (e.g. `httpGet http://:8080/api/v1/cluster/status` or `/health` if you add it) so Services don’t send traffic to pods that aren’t ready.
 - Optionally add **livenessProbe** on the same or a light endpoint to restart stuck nodes.
+
+### Cluster formation
+
+The cluster forms automatically; no separate init job is required.
+
+```mermaid
+sequenceDiagram
+  participant K8s as StatefulSet
+  participant P0 as hedgehogdb-0
+  participant P1 as hedgehogdb-1
+  participant P2 as hedgehogdb-2
+  participant DNS as Headless SVC DNS
+
+  K8s->>P0: Create pod 0
+  P0->>P0: Start, seed_nodes=[]
+  P0->>P0: Single-node cluster
+  K8s->>P1: Create pod 1 (after 0 Ready)
+  P1->>DNS: Resolve hedgehogdb-0.hedgehogdb:8080
+  P1->>P0: Join via seed
+  P0->>P1: Membership/gossip
+  K8s->>P2: Create pod 2 (after 1 Ready)
+  P2->>DNS: Resolve hedgehogdb-0, hedgehogdb-1
+  P2->>P0: Join via seeds
+  P2->>P1: Join via seeds
+  P0->>P2: Membership/gossip
+  P1->>P2: Membership/gossip
+```
+
+- The **StatefulSet** creates pods in order: `hedgehogdb-0`, then `hedgehogdb-1`, then `hedgehogdb-2`. Each pod gets a stable DNS name from the **headless Service** `hedgehogdb`: `hedgehogdb-<ordinal>.hedgehogdb.<namespace>.svc.cluster.local` (short form in the same namespace: `hedgehogdb-0.hedgehogdb`, etc.).
+- **Pod 0**: Starts with `seed_nodes` empty (set by the entrypoint from flags). It forms a one-node cluster and listens on :8080.
+- **Pod 1**: Starts with `-seed-nodes hedgehogdb-0.hedgehogdb:8080`. It resolves that name via the headless Service to pod 0’s IP and joins via the app’s membership/gossip logic. Pod 0 and 1 then know about each other.
+- **Pod 2**: Starts with `-seed-nodes hedgehogdb-0.hedgehogdb:8080,hedgehogdb-1.hedgehogdb:8080`. It joins the existing cluster; all three nodes are in the ring.
+- **Ongoing**: The app’s membership component (heartbeats, failure detection) and ring (consistent hash) keep the cluster consistent. Replication and anti-entropy use this membership.
+
+So cluster formation is: **ordered rollout + headless DNS + seed_nodes pointing at previous ordinals**.
 
 ---
 

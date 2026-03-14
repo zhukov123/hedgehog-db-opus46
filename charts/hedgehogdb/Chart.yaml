@@ -1,0 +1,11 @@
+apiVersion: v2
+name: hedgehogdb
+description: HedgehogDB - distributed key-value store with B+ tree storage
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - database
+  - key-value
+  - distributed
+maintainers: []

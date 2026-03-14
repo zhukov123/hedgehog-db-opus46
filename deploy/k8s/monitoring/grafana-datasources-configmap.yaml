@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: hedgehogdb
+  labels:
+    app: grafana
+data:
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.hedgehogdb.svc.cluster.local:9090
+        isDefault: true
+        editable: true
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo.hedgehogdb.svc.cluster.local:3200
+        editable: true
